@@ -1,3 +1,5 @@
+"""Rich-based logging configuration for the conversion pipeline."""
+
 import logging
 
 from rich.console import Console
@@ -7,6 +9,7 @@ _configured = False
 
 
 def setup_logging(level: str = "INFO") -> None:
+    """Configure logging with Rich handler. Idempotent; only runs once."""
     global _configured
     if _configured:
         return
@@ -27,4 +30,5 @@ def setup_logging(level: str = "INFO") -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
+    """Return a logger instance for the given module name."""
     return logging.getLogger(name)

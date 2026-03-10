@@ -17,6 +17,7 @@ env/
 *.pptx
 *.tmp
 dry-run-*/
+run-*/
 
 .mypy_cache/
 .ruff_cache/
@@ -30,3 +31,4 @@ Thumbs.db
 
 logs/
 raw/
+export/

@@ -1,3 +1,5 @@
+"""Estimate token usage and cost for LLM API calls."""
+
 from __future__ import annotations
 
 import tiktoken

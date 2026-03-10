@@ -40,16 +40,22 @@ ignore = ["E501"]
 [tool.ruff.format]
 line-ending = "lf"
 
+[tool.pylint.main]
+extension-pkg-allow-list = ["lxml"]
+
 [tool.pylint.format]
 max-line-length = 120
 
 [tool.pylint."messages control"]
 disable = [
-    "missing-module-docstring",
-    "missing-class-docstring",
-    "missing-function-docstring",
     "too-few-public-methods",
     "import-error",
+    "import-outside-toplevel",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-arguments",
+    "too-many-positional-arguments",
 ]
 
 [tool.mypy]

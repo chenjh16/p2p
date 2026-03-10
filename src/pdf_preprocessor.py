@@ -1,3 +1,5 @@
+"""Render PDF pages to PNG images for LLM input."""
+
 from __future__ import annotations
 
 import fitz  # PyMuPDF
@@ -8,7 +10,7 @@ logger = get_logger("preprocessor")
 
 
 def pdf_to_images(
-    pdf_path: str, dpi: int = 300
+    pdf_path: str, dpi: int = 192
 ) -> list[tuple[bytes, dict]]:
     """Render each PDF page to a high-resolution PNG image.
 

@@ -1,10 +1,12 @@
+"""Dry-run mode: prepare artifacts without calling the LLM API."""
+
 from __future__ import annotations
 
-import json
 import math
 import os
 from datetime import UTC, datetime
 
+from .artifacts import ArtifactStore
 from .logging_config import get_logger
 from .message_builder import build_messages
 from .pdf_preprocessor import pdf_to_images
@@ -22,50 +24,26 @@ def run_dry(
     batch_size: int,
 ) -> str:
     """Execute dry-run: prepare everything before the API call and export artifacts."""
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output_dir = f"dry-run-{timestamp}"
-    pages_dir = os.path.join(output_dir, "pages")
-    os.makedirs(pages_dir, exist_ok=True)
-
-    logger.info("Dry-run output directory: %s", output_dir)
+    store = ArtifactStore(pdf_path=pdf_path, dry_run=True)
 
     # Step 1: PDF preprocessing
     pages = pdf_to_images(pdf_path, dpi=dpi)
-
-    for img_bytes, meta in pages:
-        page_num = meta["page_num"]
-        img_path = os.path.join(pages_dir, f"page_{page_num:03d}.png")
-        with open(img_path, "wb") as f:
-            f.write(img_bytes)
+    store.save_page_images(pages)
 
     # Step 2: Build messages
     logger.info("Building messages...")
     messages = build_messages(pages, enable_animations=enable_animations)
-
-    # Export lightweight messages (image URLs replaced with file paths)
-    messages_light = _strip_base64(messages, pages_dir)
-    with open(os.path.join(output_dir, "messages.json"), "w") as f:
-        json.dump(messages_light, f, ensure_ascii=False, indent=2)
-
-    # Export full messages (with base64, usable for direct API calls)
-    with open(os.path.join(output_dir, "messages_full.json"), "w") as f:
-        json.dump(messages, f, ensure_ascii=False)
-    logger.info("Messages exported")
-
-    # Export tools and system prompt
-    with open(os.path.join(output_dir, "tools.json"), "w") as f:
-        json.dump([WRITE_SLIDE_XML_TOOL], f, indent=2)
-    with open(os.path.join(output_dir, "system_prompt.txt"), "w") as f:
-        f.write(messages[0]["content"])
+    store.save_messages(messages)
+    store.save_system_prompt(messages[0]["content"])
+    store.save_tools([WRITE_SLIDE_XML_TOOL])
 
     # Step 3: Token estimation
     logger.info("Estimating tokens...")
     token_est = estimate_tokens(messages, model=model_name)
-    with open(os.path.join(output_dir, "token_estimate.json"), "w") as f:
-        json.dump(token_est, f, indent=2)
+    store.save_token_estimate(token_est)
 
     # Export metadata
-    metadata = {
+    store.save_metadata({
         "timestamp": datetime.now(UTC).isoformat(),
         "pdf_path": os.path.abspath(pdf_path),
         "pdf_pages": len(pages),
@@ -77,11 +55,12 @@ def run_dry(
         "slide_width_pt": pages[0][1]["width_pt"],
         "slide_height_pt": pages[0][1]["height_pt"],
         "token_estimate": token_est,
-    }
-    with open(os.path.join(output_dir, "metadata.json"), "w") as f:
-        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    })
 
     # Print summary
+    cost_info = token_est["estimated_cost_usd"]
+    assert isinstance(cost_info, dict)
+
     logger.info("=" * 60)
     logger.info("DRY-RUN SUMMARY")
     logger.info("=" * 60)
@@ -98,7 +77,7 @@ def run_dry(
         "enabled" if enable_animations else "disabled",
     )
     logger.info("  Model:            %s", model_name)
-    logger.info("  Batches:          %d", metadata["batches"])
+    logger.info("  Batches:          %d", math.ceil(len(pages) / batch_size))
     logger.info("-" * 60)
     logger.info("  Text tokens:      %s", f"{token_est['text_tokens']:,}")
     logger.info(
@@ -118,31 +97,9 @@ def run_dry(
         "  Est. total:       %s tokens",
         f"{token_est['estimated_total_tokens']:,}",
     )
-    logger.info(
-        "  Est. cost:        $%.4f",
-        token_est["estimated_cost_usd"]["total_cost_usd"],
-    )
+    logger.info("  Est. cost:        $%.4f", cost_info["total_cost_usd"])
     logger.info("=" * 60)
-    logger.info("  Output dir:       %s/", output_dir)
+    logger.info("  Output dir:       %s/", store.root)
     logger.info("=" * 60)
 
-    return output_dir
-
-
-def _strip_base64(messages: list[dict], pages_dir: str) -> list[dict]:
-    """Create a copy of messages with base64 images replaced by file paths."""
-    import copy
-
-    result = copy.deepcopy(messages)
-    img_idx = 0
-    for msg in result:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if part.get("type") == "image_url":
-                part["image_url"]["url"] = os.path.join(
-                    pages_dir, f"page_{img_idx:03d}.png"
-                )
-                img_idx += 1
-    return result
+    return store.root

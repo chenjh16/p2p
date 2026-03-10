@@ -1,3 +1,5 @@
+"""Validate and fix LLM-generated PresentationML slide XML."""
+
 from __future__ import annotations
 
 import re

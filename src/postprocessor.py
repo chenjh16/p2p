@@ -1,3 +1,5 @@
+"""Replace __LLMCLIP__ placeholders with cropped PDF raster regions."""
+
 from __future__ import annotations
 
 import re
