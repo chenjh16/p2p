@@ -28,6 +28,11 @@ def _parse_args_with_explicit(parser: argparse.ArgumentParser) -> tuple[argparse
     return args, explicit
 
 
+def _remap_page_nums(slide_xmls: dict[int, str], page_map: dict[int, int]) -> dict[int, str]:
+    """Remap batch-local page numbers to actual PDF page numbers."""
+    return {page_map.get(k, k): v for k, v in slide_xmls.items()}
+
+
 def _print_progress(
     logger: object, slide_xmls: dict[int, str], total_pages: int, current_batch: int, total_batches: int
 ) -> None:
@@ -366,6 +371,7 @@ def main() -> None:
                 break
 
     n_batches = len(batches)
+    store.set_batch_count(n_batches)
     logger.info("Processing %d pages in %d batch(es)", n_pages, n_batches)
 
     total_input_tokens = 0
@@ -421,12 +427,14 @@ def main() -> None:
         batch_label = f"batch {batch_idx + 1}/{n_batches} (pages {start}-{end - 1})"
         logger.info("Building messages for %s", batch_label)
 
+        batch_page_map = {i: pages[start + i][1]["page_num"] for i in range(len(batch_pages))}
+
         messages = build_messages(
             batch_pages, enable_animations=args.enable_animations, prompt_lang=args.prompt_lang, provider=provider
         )
 
+        store.save_messages(messages, batch_idx=batch_idx)
         if batch_idx == 0:
-            store.save_messages(messages)
             sys_prompt_text = get_system_prompt_text(args.enable_animations, args.prompt_lang)
             store.save_system_prompt(sys_prompt_text)
             tools_to_save = [WRITE_SLIDE_XML_TOOL_ANTHROPIC] if provider == "anthropic" else [WRITE_SLIDE_XML_TOOL]
@@ -453,8 +461,12 @@ def main() -> None:
             token_est["assumed_output_tps"],
         )
 
-        stream_log = os.path.join(store.root, f"stream_batch{batch_idx}.log")
+        stream_log = os.path.join(store.root, f"stream_batch{store.batch_suffix(batch_idx)}.log")
         logger.info("Calling LLM API for %s (%s)", batch_label, provider)
+
+        def _on_slide_ready(batch_local_num: int, xml_str: str) -> None:
+            actual = batch_page_map.get(batch_local_num, batch_local_num)
+            store.save_slide_xml(actual, xml_str)
 
         batch_xmls: dict[int, str] = {}
         while True:
@@ -471,6 +483,7 @@ def main() -> None:
                         stream_log_path=stream_log,
                         reasoning_effort=args.reasoning_effort,
                         estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+                        on_slide_ready=_on_slide_ready,
                     )
                 else:
                     result = call_llm(
@@ -481,16 +494,17 @@ def main() -> None:
                         stream_log_path=stream_log,
                         reasoning_effort=args.reasoning_effort,
                         estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+                        on_slide_ready=_on_slide_ready,
                     )
                 t_api_total += time.time() - t_api_start
 
-                store.save_api_response(result.response_data)
-                store.save_stream_chunks(result.raw_chunks)
-                store.save_tool_calls(result.tool_calls_raw)
+                store.save_api_response(result.response_data, batch_idx=batch_idx)
+                store.save_stream_chunks(result.raw_chunks, batch_idx=batch_idx)
+                store.save_tool_calls(result.tool_calls_raw, batch_idx=batch_idx)
                 store.save_reasoning(result.reasoning_text, batch_idx=batch_idx)
                 store.save_content_text(result.content_text, batch_idx=batch_idx)
 
-                batch_xmls = result.slide_xmls
+                batch_xmls = _remap_page_nums(result.slide_xmls, batch_page_map)
                 break
 
             except Exception as exc:

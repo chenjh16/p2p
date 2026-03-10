@@ -74,24 +74,36 @@ def run_dry(
 
     n_pages = len(pages)
     n_batches = math.ceil(n_pages / batch_size) if batch_size > 0 else 1
+    store.set_batch_count(n_batches)
 
-    # Step 2: Build messages for the first batch (representative for per-batch estimates)
+    # Step 2: Build and save messages per batch
     logger.info("Building messages...")
-    first_batch_pages = pages[:batch_size] if n_pages > batch_size else pages
-    batch_messages = build_messages(
-        first_batch_pages, enable_animations=enable_animations, prompt_lang=prompt_lang, provider=provider
-    )
-    # Also save full messages for all pages (useful for inspection)
-    all_messages = build_messages(pages, enable_animations=enable_animations, prompt_lang=prompt_lang, provider=provider)
-    store.save_messages(all_messages)
     sys_prompt_text = get_system_prompt_text(enable_animations, prompt_lang)
     store.save_system_prompt(sys_prompt_text)
     tools_to_save = [WRITE_SLIDE_XML_TOOL_ANTHROPIC] if provider == "anthropic" else [WRITE_SLIDE_XML_TOOL]
     store.save_tools(tools_to_save)
 
+    for batch_idx in range(n_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, n_pages)
+        batch_pages = pages[start:end]
+        batch_msgs = build_messages(
+            batch_pages, enable_animations=enable_animations,
+            prompt_lang=prompt_lang, provider=provider,
+        )
+        store.save_messages(batch_msgs, batch_idx=batch_idx)
+
     # Step 3: Token estimation (based on first batch, not all pages)
     logger.info("Estimating tokens...")
-    token_est = estimate_tokens(batch_messages, model=model_name, reasoning_effort=reasoning_effort, dpi=dpi, output_tps=output_tps)
+    first_batch_pages = pages[:batch_size] if n_pages > batch_size else pages
+    batch_messages = build_messages(
+        first_batch_pages, enable_animations=enable_animations,
+        prompt_lang=prompt_lang, provider=provider,
+    )
+    token_est = estimate_tokens(
+        batch_messages, model=model_name, reasoning_effort=reasoning_effort,
+        dpi=dpi, output_tps=output_tps,
+    )
     store.save_token_estimate(token_est)
 
     # Estimate totals across all batches

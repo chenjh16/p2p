@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections.abc import Callable
 
 import httpx
 import openai
@@ -54,16 +55,19 @@ def call_llm(
     stream_log_path: str = "",
     reasoning_effort: str = "medium",
     estimated_response_seconds: float = 0,
+    on_slide_ready: Callable[[int, str], None] | None = None,
 ) -> LLMResult:
     """Call the LLM API with streaming and extract slide XMLs from tool calls.
 
     Streams output to stderr in real-time and writes to stream_log_path.
-    The timeout is set dynamically: max(estimated_response_seconds * 3, 600) seconds,
-    ensuring enough headroom for slow responses.
+    Timeout: connect=30s (TCP+TLS), read=max(estimated_response_seconds*3, 600)s.
+    When ``on_slide_ready`` is provided, each completed tool call triggers an
+    immediate callback with (page_num, slide_xml) for instant disk persistence.
     """
     min_timeout = 600
     timeout_seconds = max(estimated_response_seconds * 3, min_timeout)
-    timeout = httpx.Timeout(timeout_seconds, connect=30.0)
+    connect_timeout = 30.0
+    timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout)
 
     client_kwargs: dict = {"timeout": timeout, "max_retries": 0}
     if api_base_url:
@@ -73,7 +77,8 @@ def call_llm(
     client = openai.OpenAI(**client_kwargs)
 
     logger.info(
-        "HTTP timeout: %.0fs (3× estimated ~%.0fs response), no retries",
+        "HTTP timeout: connect=%.0fs, read/stream=%.0fs (3× estimated ~%.0fs), no retries",
+        connect_timeout,
         timeout_seconds,
         estimated_response_seconds,
     )
@@ -94,19 +99,21 @@ def call_llm(
         "tools": tools,
         "tool_choice": "required",
         "parallel_tool_calls": True,
-        "max_tokens": max_tokens,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
     if reasoning_effort:
         create_kwargs["reasoning_effort"] = reasoning_effort
+        create_kwargs["max_completion_tokens"] = max_tokens
+    else:
+        create_kwargs["max_tokens"] = max_tokens
 
     stream = client.chat.completions.create(**create_kwargs)  # type: ignore[call-overload]
 
     log_file = open(stream_log_path, "w", encoding="utf-8") if stream_log_path else None  # noqa: SIM115
 
     try:
-        stream_result = _consume_stream(stream, log_file)
+        stream_result = _consume_stream(stream, log_file, on_slide_ready=on_slide_ready)
     finally:
         if log_file:
             log_file.close()
@@ -162,9 +169,35 @@ def call_llm(
     )
 
 
+def _flush_tool_call(
+    tc: dict,
+    idx: int,
+    slide_xmls: dict[int, str],
+    on_slide_ready: Callable[[int, str], None] | None,
+) -> None:
+    """Parse a completed tool call and save the slide XML immediately."""
+    if tc["name"] != "write_slide_xml":
+        logger.warning("Unexpected tool call: %s", tc["name"])
+        return
+    try:
+        args = json.loads(tc["arguments"])
+    except json.JSONDecodeError:
+        logger.error("Failed to parse tool call arguments (index %d)", idx)
+        return
+    page_num = args.get("page_num")
+    slide_xml = args.get("slide_xml", "")
+    if page_num is not None:
+        slide_xmls[page_num] = slide_xml
+        logger.debug("Slide %3d: %d chars XML", page_num, len(slide_xml))
+        if on_slide_ready:
+            on_slide_ready(page_num, slide_xml)
+
+
 def _consume_stream(
     stream,  # type: ignore[type-arg]
     log_file,  # type: ignore[type-arg]
+    *,
+    on_slide_ready: Callable[[int, str], None] | None = None,
 ) -> tuple[dict[int, str], dict, list[dict], list[dict], str, str]:
     """Consume the streaming response, printing to stderr and accumulating tool calls."""
     tool_calls_acc: dict[int, dict] = {}
@@ -176,6 +209,8 @@ def _consume_stream(
     raw_chunks: list[dict] = []
     chunk_count = 0
     current_tc_idx: int | None = None
+    slide_xmls: dict[int, str] = {}
+    flushed_indices: set[int] = set()
 
     def _write(text: str) -> None:
         sys.stderr.write(text)
@@ -223,6 +258,9 @@ def _consume_stream(
             for tc_delta in delta.tool_calls:
                 idx = tc_delta.index
                 if idx not in tool_calls_acc:
+                    if current_tc_idx is not None and current_tc_idx not in flushed_indices:
+                        _flush_tool_call(tool_calls_acc[current_tc_idx], current_tc_idx, slide_xmls, on_slide_ready)
+                        flushed_indices.add(current_tc_idx)
                     tool_calls_acc[idx] = {
                         "id": tc_delta.id or "",
                         "name": "",
@@ -244,12 +282,15 @@ def _consume_stream(
 
                         _write(frag)
 
+    for idx in sorted(tool_calls_acc.keys()):
+        if idx not in flushed_indices:
+            _flush_tool_call(tool_calls_acc[idx], idx, slide_xmls, on_slide_ready)
+            flushed_indices.add(idx)
+
     content_text = "".join(content_parts)
     reasoning_text = "".join(reasoning_parts)
 
-    slide_xmls: dict[int, str] = {}
     tool_calls_raw: list[dict] = []
-
     for idx in sorted(tool_calls_acc.keys()):
         tc = tool_calls_acc[idx]
         tool_calls_raw.append({
@@ -258,21 +299,6 @@ def _consume_stream(
             "name": tc["name"],
             "arguments_raw": tc["arguments"],
         })
-
-        if tc["name"] != "write_slide_xml":
-            logger.warning("Unexpected tool call: %s", tc["name"])
-            continue
-        try:
-            args = json.loads(tc["arguments"])
-        except json.JSONDecodeError:
-            logger.error("Failed to parse tool call arguments (index %d)", idx)
-            continue
-
-        page_num = args.get("page_num")
-        slide_xml = args.get("slide_xml", "")
-        if page_num is not None:
-            slide_xmls[page_num] = slide_xml
-            logger.debug("Slide %3d: %d chars XML", page_num, len(slide_xml))
 
     slide_sizes = {str(p): len(x) for p, x in sorted(slide_xmls.items())}
     response_data: dict = {

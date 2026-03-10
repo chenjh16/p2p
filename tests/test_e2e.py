@@ -29,7 +29,7 @@ def test_dry_run(sample_pdf, tmp_path):
     assert output_dir.startswith("runs/")
     assert os.path.isdir(output_dir)
     assert os.path.isfile(os.path.join(output_dir, "metadata.json"))
-    assert os.path.isfile(os.path.join(output_dir, "messages.json"))
+    assert os.path.isfile(os.path.join(output_dir, "messages_0.json"))
     assert os.path.isfile(os.path.join(output_dir, "system_prompt.md"))
     assert os.path.isfile(os.path.join(output_dir, "token_estimate.json"))
     assert os.path.isfile(os.path.join(output_dir, "run_params.json"))
@@ -199,7 +199,7 @@ def test_dry_run_anthropic(sample_pdf, tmp_path):
     assert output_dir.startswith("runs/")
     assert os.path.isdir(output_dir)
     assert os.path.isfile(os.path.join(output_dir, "metadata.json"))
-    assert os.path.isfile(os.path.join(output_dir, "messages.json"))
+    assert os.path.isfile(os.path.join(output_dir, "messages_0.json"))
 
     with open(os.path.join(output_dir, "metadata.json")) as f:
         meta = json.load(f)
@@ -207,7 +207,7 @@ def test_dry_run_anthropic(sample_pdf, tmp_path):
     assert meta["runtime_params"]["recommended_batch_size"] > 0
     assert meta["runtime_params"]["gateway_timeout_seconds"] == 600
 
-    with open(os.path.join(output_dir, "messages.json")) as f:
+    with open(os.path.join(output_dir, "messages_0.json")) as f:
         msgs = json.load(f)
     assert all(m.get("role") != "system" for m in msgs)
 
@@ -239,3 +239,106 @@ def test_dry_run_custom_output_tps(sample_pdf, tmp_path):
     assert est["assumed_output_tps"] == 100.0
 
     shutil.rmtree("runs")
+
+
+def test_multi_batch_conversion(mock_server, tmp_path):
+    """Multi-batch conversion (4 batches, batch_size=5) with correct page mapping."""
+    import fitz
+    from pptx import Presentation as PptxPresentation
+
+    from src.api_client import call_llm
+    from src.artifacts import ArtifactStore
+    from src.logging_config import setup_logging
+    from src.message_builder import build_messages
+    from src.pdf_preprocessor import pdf_to_images
+    from src.pptx_assembler import PPTXAssembler
+
+    setup_logging("WARNING")
+    os.chdir(tmp_path)
+
+    total_pages = 16
+    batch_size = 5
+    pdf_path = str(tmp_path / "multi.pdf")
+    doc = fitz.open()
+    for i in range(total_pages):
+        page = doc.new_page(width=720, height=405)
+        page.insert_text((100, 200), f"Page {i}", fontsize=20)
+    doc.save(pdf_path)
+    doc.close()
+
+    pages = pdf_to_images(pdf_path, dpi=96)
+    assert len(pages) == total_pages
+
+    store = ArtifactStore(pdf_path=pdf_path)
+    store.save_page_images(pages)
+
+    slide_xmls: dict[int, str] = {}
+    batches: list[tuple[int, int]] = []
+    for s in range(0, total_pages, batch_size):
+        batches.append((s, min(s + batch_size, total_pages)))
+
+    assert len(batches) == 4
+    store.set_batch_count(len(batches))
+
+    for batch_idx, (start, end) in enumerate(batches):
+        batch_pages = pages[start:end]
+        batch_page_map = {
+            i: pages[start + i][1]["page_num"] for i in range(len(batch_pages))
+        }
+
+        messages = build_messages(batch_pages, enable_animations=False)
+        store.save_messages(messages, batch_idx=batch_idx)
+
+        stream_log = os.path.join(store.root, f"stream_batch{batch_idx}.log")
+        result = call_llm(
+            messages=messages,
+            api_base_url=MOCK_BASE_URL,
+            api_key="test-key",
+            model_name="mock-gpt-5.4",
+            stream_log_path=stream_log,
+            reasoning_effort="",
+            on_slide_ready=lambda pn, xml, m=batch_page_map: store.save_slide_xml(m.get(pn, pn), xml),
+        )
+
+        remapped = {batch_page_map.get(k, k): v for k, v in result.slide_xmls.items()}
+        slide_xmls.update(remapped)
+
+        store.save_api_response(result.response_data, batch_idx=batch_idx)
+        store.save_stream_chunks(result.raw_chunks, batch_idx=batch_idx)
+        store.save_tool_calls(result.tool_calls_raw, batch_idx=batch_idx)
+
+    assert len(slide_xmls) == total_pages
+    for i in range(total_pages):
+        assert i in slide_xmls, f"Page {i} missing from slide_xmls"
+
+    for i in range(total_pages):
+        xml_path = os.path.join(store.slides_dir, f"slide_{i:03d}.xml")
+        assert os.path.isfile(xml_path), f"slide_{i:03d}.xml not on disk"
+
+    for batch_idx in range(len(batches)):
+        suffix = store.batch_suffix(batch_idx)
+        assert os.path.isfile(os.path.join(store.root, f"messages{suffix}.json"))
+        assert os.path.isfile(os.path.join(store.root, f"api_response{suffix}.json"))
+        assert os.path.isfile(os.path.join(store.root, f"stream_chunks{suffix}.jsonl"))
+        assert os.path.isfile(os.path.join(store.root, f"tool_calls{suffix}.json"))
+
+    assembler = PPTXAssembler(
+        slide_width_pt=pages[0][1]["width_pt"],
+        slide_height_pt=pages[0][1]["height_pt"],
+    )
+    assembler.assemble(slide_xmls)
+    output_pptx = str(tmp_path / "multi_output.pptx")
+    assembler.save(output_pptx)
+
+    prs = PptxPresentation(output_pptx)
+    assert len(prs.slides) == total_pages
+
+    for i in range(total_pages):
+        slide = prs.slides[i]
+        texts = [shape.text for shape in slide.shapes if hasattr(shape, "text")]
+        assert any("Test Slide Page" in t for t in texts), (
+            f"Slide {i} has no content: {texts}"
+        )
+
+    shutil.rmtree("runs")
+    os.remove(output_pptx)

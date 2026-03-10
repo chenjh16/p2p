@@ -69,7 +69,7 @@ class TestArtifactStore:
         store = ArtifactStore(sample_pdf)
         store.save_reasoning("This is the model's thinking process.", batch_idx=0)
 
-        path = os.path.join(store.root, "reasoning.txt")
+        path = os.path.join(store.root, "reasoning_0.txt")
         assert os.path.isfile(path)
         with open(path) as f:
             assert "thinking process" in f.read()
@@ -82,7 +82,7 @@ class TestArtifactStore:
         store = ArtifactStore(sample_pdf)
         store.save_reasoning("", batch_idx=0)
 
-        assert not os.path.isfile(os.path.join(store.root, "reasoning.txt"))
+        assert not os.path.isfile(os.path.join(store.root, "reasoning_0.txt"))
         shutil.rmtree("runs")
 
     def test_save_content_text(self, sample_pdf, tmp_path):
@@ -92,7 +92,7 @@ class TestArtifactStore:
         store = ArtifactStore(sample_pdf)
         store.save_content_text("Some content output", batch_idx=0)
 
-        path = os.path.join(store.root, "content.txt")
+        path = os.path.join(store.root, "content_0.txt")
         assert os.path.isfile(path)
         shutil.rmtree("runs")
 
@@ -112,10 +112,11 @@ class TestArtifactStore:
         from src.artifacts import ArtifactStore
 
         store = ArtifactStore(sample_pdf)
-        store.save_api_response({"batch": 0})
-        store.save_api_response({"batch": 1})
+        store.set_batch_count(2)
+        store.save_api_response({"batch": 0}, batch_idx=0)
+        store.save_api_response({"batch": 1}, batch_idx=1)
 
-        assert os.path.isfile(os.path.join(store.root, "api_response.json"))
+        assert os.path.isfile(os.path.join(store.root, "api_response_0.json"))
         assert os.path.isfile(os.path.join(store.root, "api_response_1.json"))
         shutil.rmtree("runs")
 

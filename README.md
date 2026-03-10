@@ -27,6 +27,7 @@ The tool analyzes each slide image with the LLM and directly generates Presentat
 - **Error Recovery** — interactive retry/skip/quit when API calls fail mid-batch; preserves progress and allows partial assembly
 - **Continue Run** — resume incomplete conversions from a previous run directory (`--continue-run`)
 - **Replay** — re-run a previous conversion with the same parameters (`--replay`)
+- **Immediate Slide Persistence** — each slide XML is written to disk as soon as its tool call completes during streaming, preventing data loss on crashes
 - **Configurable TPS** — tune estimated output tokens-per-second for accurate time estimates (`--output-tps`, default 50)
 - **Auto Provider Detection** — automatically selects Anthropic API format when model name starts with `claude-`
 - **Bilingual Prompts** — system prompt available in English and Chinese (`--prompt-lang`)
@@ -47,7 +48,7 @@ PDF ──→ [PyMuPDF] ──→ Page Images ──→ [LLM API] ──→ Slid
 
 1. **PDF Preprocessing** — render each page to a high-resolution PNG image (default 192 DPI)
 2. **Message Building** — construct the OpenAI Chat Completions messages with system prompt, page images, and task instructions
-3. **LLM API Call** — stream the LLM's response, extracting `write_slide_xml` tool calls with PresentationML XML for each page
+3. **LLM API Call** — stream the LLM's response, extracting `write_slide_xml` tool calls with PresentationML XML for each page; each slide XML is persisted to disk immediately upon tool call completion
 4. **XML Validation** — parse, validate, and repair the generated XML (strip code fences, fix common errors, register relationships)
 5. **Aspect Ratio Detection** — detect page aspect ratio and snap to standard PowerPoint dimensions (16:9, 4:3, 16:10)
 6. **PPTX Assembly** — create a skeleton presentation and inject the validated slide XML into each slide
@@ -217,23 +218,33 @@ runs/run-slides-20260309-143052/
 │   ├── page_000.png             # Rendered page images
 │   ├── page_001.png
 │   └── ...
-├── messages.json                # API messages (base64 replaced with file paths)
-├── messages_full.json           # API messages (complete with base64)
+├── messages_00.json             # API messages (base64 replaced with file paths)
+├── messages_01.json             # (per-batch)
+├── messages_full_00.json        # API messages (complete with base64)
+├── messages_full_01.json        # (per-batch)
 ├── system_prompt.md             # System prompt sent to the model
 ├── tools.json                   # Tool definitions
 ├── token_estimate.json          # Token count and cost estimate
-├── api_response.json            # API response metadata and usage stats
-├── stream_chunks.jsonl          # Raw streaming chunks (JSONL)
-├── stream_batch0.log            # Real-time streaming output log
-├── tool_calls.json              # Parsed tool call results
-├── reasoning.txt                # Model's thinking/reasoning process
-├── content.txt                  # Model's non-tool-call text output
+├── api_response_00.json         # API response metadata and usage stats
+├── api_response_01.json         # (per-batch)
+├── stream_chunks_00.jsonl       # Raw streaming chunks (JSONL)
+├── stream_chunks_01.jsonl       # (per-batch)
+├── stream_batch_00.log          # Real-time streaming output log
+├── stream_batch_01.log          # (per-batch)
+├── tool_calls_00.json           # Parsed tool call results
+├── tool_calls_01.json           # (per-batch)
+├── reasoning_00.txt             # Model's thinking/reasoning process
+├── reasoning_01.txt             # (per-batch)
+├── content_00.txt               # Model's non-tool-call text output
+├── content_01.txt               # (per-batch)
 ├── slides/
 │   ├── slide_000.xml            # Generated PresentationML XML per slide
 │   ├── slide_001.xml
 │   └── ...
 └── metadata.json                # Run metadata (timing, token totals, etc.)
 ```
+
+For multi-batch conversions, per-batch artifacts use zero-padded suffixes (e.g., `_00`, `_01`). Single-batch runs also use `_0` suffix.
 
 Dry-run directories use the `dry-run-` prefix and contain only pre-API artifacts. Replay directories use the `replay-` prefix and include a `replay_of` field in `metadata.json`.
 
@@ -269,6 +280,7 @@ The post-processor then:
 Batch size is auto-calculated based on a 600-second gateway timeout, the assumed output TPS (50 tok/s, configurable via `--output-tps`), and the reasoning effort multiplier. For large PDFs exceeding the batch size:
 - Pages are split into overlapping batches (2-page overlap)
 - Each batch is processed in a separate API call
+- Each batch uses batch-local page indices (0 to batch_size-1) when communicating with the LLM, with an internal mapping to actual PDF page numbers for artifact storage
 - When animations are enabled, the later batch's version of overlapping pages is preferred for better transition context
 
 ## Project Structure
@@ -305,7 +317,7 @@ p2p/
 │   ├── test_system_prompt.py    # System prompt unit tests
 │   ├── test_artifacts.py        # Artifact store unit tests
 │   ├── test_pptx_assembler.py   # PPTX assembly unit tests
-│   └── test_misc.py             # Anthropic budget + logging tests
+│   └── test_misc.py             # Anthropic effort/budget mapping + logging tests
 ├── docs/
 │   └── design.md                # Detailed design document (EN + ZH)
 ├── Makefile                     # Development and conversion commands
@@ -339,10 +351,10 @@ pylint src/
 python -m pytest tests/ -v
 ```
 
-The test suite includes 84 tests across 11 focused modules:
+The test suite includes 87 tests across 11 focused modules:
 
 **End-to-end tests:**
-- `test_e2e.py` — core pipeline: dry-run, full conversion (OpenAI + Anthropic), custom output TPS
+- `test_e2e.py` — core pipeline: dry-run, full conversion (OpenAI + Anthropic), custom output TPS, multi-batch conversion
 - `test_error_recovery.py` — batch-level error recovery: retry, skip to post-processing, quit with metadata
 - `test_continue_run.py` — resume incomplete runs: post-process only, generate missing, quit, missing directory
 
@@ -354,7 +366,7 @@ The test suite includes 84 tests across 11 focused modules:
 - `test_system_prompt.py` — EN/ZH prompts, animation sections, tool definitions (OpenAI + Anthropic), font calibration
 - `test_artifacts.py` — directory creation, dry-run/replay prefixes, input copying, metadata/params/reasoning saving
 - `test_pptx_assembler.py` — single/multi slide assembly, dimensions, hyperlink handling
-- `test_misc.py` — Anthropic thinking budget mapping, logging configuration
+- `test_misc.py` — Anthropic adaptive effort level mapping, thinking budget (legacy models), logging configuration
 
 ### Code Quality
 
@@ -412,6 +424,7 @@ This project is licensed under the [MIT License](LICENSE).
 - **错误恢复** — API 调用失败时交互式重试/跳过/退出；保留已完成进度，支持部分组装
 - **继续运行** — 从之前的运行目录恢复未完成的转换（`--continue-run`）
 - **重放** — 使用相同参数重新运行之前的转换（`--replay`）
+- **即时幻灯片持久化** — 流式传输过程中，每个幻灯片 XML 在其工具调用完成后立即写入磁盘，防止崩溃导致数据丢失
 - **可配置 TPS** — 调整预估输出 token 速率以获得准确的时间估算（`--output-tps`，默认 50）
 - **自动提供商检测** — 当模型名称以 `claude-` 开头时自动选择 Anthropic API 格式
 - **双语提示词** — 系统提示词支持英文和中文（`--prompt-lang`）
@@ -432,7 +445,7 @@ PDF ──→ [PyMuPDF] ──→ 页面图像 ──→ [LLM API] ──→ 幻
 
 1. **PDF 预处理** — 将每页渲染为高分辨率 PNG 图像（默认 192 DPI）
 2. **消息构建** — 构建包含系统提示词、页面图像和任务指令的 OpenAI Chat Completions 消息
-3. **LLM API 调用** — 流式接收 LLM 的响应，提取每页的 `write_slide_xml` 工具调用及 PresentationML XML
+3. **LLM API 调用** — 流式接收 LLM 的响应，提取每页的 `write_slide_xml` 工具调用及 PresentationML XML；每个幻灯片 XML 在工具调用完成后立即持久化到磁盘
 4. **XML 验证** — 解析、验证并修复生成的 XML（去除代码围栏、修复常见错误、注册关系）
 5. **宽高比检测** — 检测页面宽高比并对齐到标准 PowerPoint 尺寸（16:9、4:3、16:10）
 6. **PPTX 组装** — 创建骨架演示文稿并将验证后的幻灯片 XML 注入每页
@@ -602,23 +615,33 @@ runs/run-slides-20260309-143052/
 │   ├── page_000.png             # 渲染的页面图像
 │   ├── page_001.png
 │   └── ...
-├── messages.json                # API 消息（base64 替换为文件路径）
-├── messages_full.json           # API 消息（包含完整 base64）
+├── messages_00.json             # API 消息（base64 替换为文件路径）
+├── messages_01.json             # （每批次）
+├── messages_full_00.json        # API 消息（包含完整 base64）
+├── messages_full_01.json        # （每批次）
 ├── system_prompt.md             # 发送给模型的系统提示词
 ├── tools.json                   # 工具定义
 ├── token_estimate.json          # Token 计数和成本估算
-├── api_response.json            # API 响应元数据和使用统计
-├── stream_chunks.jsonl          # 原始流式数据块（JSONL）
-├── stream_batch0.log            # 实时流式输出日志
-├── tool_calls.json              # 解析后的工具调用结果
-├── reasoning.txt                # 模型的思考/推理过程
-├── content.txt                  # 模型的非工具调用文本输出
+├── api_response_00.json         # API 响应元数据和使用统计
+├── api_response_01.json         # （每批次）
+├── stream_chunks_00.jsonl       # 原始流式数据块（JSONL）
+├── stream_chunks_01.jsonl       # （每批次）
+├── stream_batch_00.log          # 实时流式输出日志
+├── stream_batch_01.log          # （每批次）
+├── tool_calls_00.json           # 解析后的工具调用结果
+├── tool_calls_01.json           # （每批次）
+├── reasoning_00.txt             # 模型的思考/推理过程
+├── reasoning_01.txt             # （每批次）
+├── content_00.txt               # 模型的非工具调用文本输出
+├── content_01.txt               # （每批次）
 ├── slides/
 │   ├── slide_000.xml            # 每页生成的 PresentationML XML
 │   ├── slide_001.xml
 │   └── ...
 └── metadata.json                # 运行元数据（耗时、token 总计等）
 ```
+
+对于多批次转换，每批次的产物文件使用零填充后缀（如 `_00`、`_01`）。单批次运行也使用 `_0` 后缀。
 
 试运行目录使用 `dry-run-` 前缀，仅包含 API 调用前的产物。重放目录使用 `replay-` 前缀，`metadata.json` 中包含 `replay_of` 字段。
 
@@ -654,6 +677,7 @@ __LLMCLIP__:[x1, y1][x2, y2]
 批次大小根据 600 秒网关超时、假设的输出速度（50 tok/s，可通过 `--output-tps` 配置）和推理强度倍率自动计算。对于超过批次大小的大型 PDF：
 - 页面被分为有重叠的批次（2 页重叠）
 - 每个批次通过单独的 API 调用处理
+- 每个批次在与 LLM 通信时使用批次内部页码索引（0 到 batch_size-1），通过内部映射表将其转换为实际 PDF 页码用于产物存储
 - 启用动画时，重叠页面优先使用后一批次的版本以获得更好的转场上下文
 
 ## 项目结构
@@ -690,7 +714,7 @@ p2p/
 │   ├── test_system_prompt.py    # 系统提示词单元测试
 │   ├── test_artifacts.py        # 产物存储单元测试
 │   ├── test_pptx_assembler.py   # PPTX 组装单元测试
-│   └── test_misc.py             # Anthropic 预算 + 日志测试
+│   └── test_misc.py             # Anthropic effort/budget 映射 + 日志测试
 ├── docs/
 │   └── design.md                # 详细设计文档（中英双语）
 ├── Makefile                     # 开发和转换命令
@@ -724,10 +748,10 @@ pylint src/
 python -m pytest tests/ -v
 ```
 
-测试套件包含 84 项测试，分布在 11 个专注模块中：
+测试套件包含 87 项测试，分布在 11 个专注模块中：
 
 **端到端测试：**
-- `test_e2e.py` — 核心流程：试运行、完整转换（OpenAI + Anthropic）、自定义输出 TPS
+- `test_e2e.py` — 核心流程：试运行、完整转换（OpenAI + Anthropic）、自定义输出 TPS、多批次转换
 - `test_error_recovery.py` — 批次级错误恢复：重试、跳过到后处理、退出并保存元数据
 - `test_continue_run.py` — 恢复未完成运行：仅后处理、生成缺失页、退出、目录不存在
 
@@ -739,7 +763,7 @@ python -m pytest tests/ -v
 - `test_system_prompt.py` — 中英文提示词、动画部分、工具定义（OpenAI + Anthropic）、字体校准
 - `test_artifacts.py` — 目录创建、试运行/重放前缀、输入复制、元数据/参数/推理保存
 - `test_pptx_assembler.py` — 单页/多页组装、尺寸、超链接处理
-- `test_misc.py` — Anthropic 思考预算映射、日志配置
+- `test_misc.py` — Anthropic adaptive effort 映射、思考预算（旧模型）、日志配置
 
 ### 代码质量
 

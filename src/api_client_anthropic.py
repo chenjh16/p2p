@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections.abc import Callable
 
 import anthropic
 import httpx
@@ -26,14 +27,18 @@ def call_anthropic(
     stream_log_path: str = "",
     reasoning_effort: str = "medium",
     estimated_response_seconds: float = 0,
+    on_slide_ready: Callable[[int, str], None] | None = None,
 ) -> LLMResult:
     """Call the Anthropic Messages API with streaming and extract slide XMLs from tool_use blocks.
 
-    The timeout is set dynamically: max(estimated_response_seconds * 3, 600) seconds.
+    Timeout: connect=30s (TCP+TLS), read=max(estimated_response_seconds*3, 600)s.
+    When ``on_slide_ready`` is provided, each completed tool_use block triggers an
+    immediate callback with (page_num, slide_xml) for instant disk persistence.
     """
     min_timeout = 600
     timeout_seconds = max(estimated_response_seconds * 3, min_timeout)
-    timeout = httpx.Timeout(timeout_seconds, connect=30.0)
+    connect_timeout = 30.0
+    timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout)
 
     client_kwargs: dict = {"timeout": timeout, "max_retries": 0}
     if api_key:
@@ -45,7 +50,8 @@ def call_anthropic(
     tools = [WRITE_SLIDE_XML_TOOL_ANTHROPIC]
 
     logger.info(
-        "HTTP timeout: %.0fs (3× estimated ~%.0fs response), no retries",
+        "HTTP timeout: connect=%.0fs, read/stream=%.0fs (3× estimated ~%.0fs), no retries",
+        connect_timeout,
         timeout_seconds,
         estimated_response_seconds,
     )
@@ -65,16 +71,27 @@ def call_anthropic(
         "max_tokens": max_tokens,
     }
 
-    thinking_budget = _thinking_budget(reasoning_effort, max_tokens)
-    if thinking_budget > 0:
-        create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-        logger.info("Extended thinking enabled: budget=%d tokens (reasoning=%s)", thinking_budget, reasoning_effort)
+    is_adaptive_model = any(model_name.startswith(p) for p in ("claude-opus-4-6", "claude-sonnet-4-6"))
 
-    log_file = open(stream_log_path, "w", encoding="utf-8") if stream_log_path else None  # noqa: SIM115  # pylint: disable=consider-using-with
+    if is_adaptive_model:
+        create_kwargs["thinking"] = {"type": "adaptive"}
+        effort_level = _effort_level(reasoning_effort)
+        if effort_level != "high":
+            create_kwargs["output_config"] = {"effort": effort_level}
+        logger.info("Adaptive thinking (effort=%s, reasoning=%s)", effort_level, reasoning_effort)
+    else:
+        thinking_budget = _thinking_budget(reasoning_effort, max_tokens)
+        if thinking_budget > 0:
+            create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            logger.info("Extended thinking enabled: budget=%d tokens (reasoning=%s)", thinking_budget, reasoning_effort)
+
+    log_file = (  # noqa: SIM115
+        open(stream_log_path, "w", encoding="utf-8") if stream_log_path else None  # pylint: disable=consider-using-with
+    )
 
     try:
         slide_xmls, response_data, raw_events, tool_calls_raw, content_text, reasoning_text = _stream_response(
-            client, create_kwargs, log_file
+            client, create_kwargs, log_file, on_slide_ready=on_slide_ready
         )
     finally:
         if log_file:
@@ -123,8 +140,26 @@ def call_anthropic(
     )
 
 
+def _effort_level(reasoning_effort: str) -> str:
+    """Map CLI reasoning effort to Anthropic adaptive-thinking effort level.
+
+    Anthropic supports: low, medium, high (default), max (Opus 4.6 only).
+    """
+    mapping = {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "max",
+    }
+    return mapping.get(reasoning_effort, "high")
+
+
 def _thinking_budget(reasoning_effort: str, max_tokens: int) -> int:
-    """Map reasoning effort to an extended thinking budget (0 = disabled)."""
+    """Map reasoning effort to an extended thinking budget (0 = disabled).
+
+    Used only for older models (Opus 4.5, Sonnet 4.5, etc.) that don't support
+    adaptive thinking.
+    """
     budgets = {
         "low": 0,
         "medium": min(16000, max_tokens // 4),
@@ -134,10 +169,36 @@ def _thinking_budget(reasoning_effort: str, max_tokens: int) -> int:
     return budgets.get(reasoning_effort, 0)
 
 
+def _flush_tool_block(
+    tb: dict,
+    idx: int,
+    slide_xmls: dict[int, str],
+    on_slide_ready: Callable[[int, str], None] | None,
+) -> None:
+    """Parse a completed tool_use block and save the slide XML immediately."""
+    if tb["name"] != "write_slide_xml":
+        logger.warning("Unexpected tool call: %s", tb["name"])
+        return
+    try:
+        args = json.loads(tb["input_json"])
+    except json.JSONDecodeError:
+        logger.error("Failed to parse tool_use input (index %d)", idx)
+        return
+    page_num = args.get("page_num")
+    slide_xml = args.get("slide_xml", "")
+    if page_num is not None:
+        slide_xmls[page_num] = slide_xml
+        logger.debug("Slide %3d: %d chars XML", page_num, len(slide_xml))
+        if on_slide_ready:
+            on_slide_ready(page_num, slide_xml)
+
+
 def _stream_response(
     client: anthropic.Anthropic,
     create_kwargs: dict,
     log_file,  # type: ignore[type-arg]
+    *,
+    on_slide_ready: Callable[[int, str], None] | None = None,
 ) -> tuple[dict[int, str], dict, list[dict], list[dict], str, str]:
     """Stream the Anthropic response, printing to stderr and accumulating tool_use blocks."""
     content_parts: list[str] = []
@@ -149,6 +210,7 @@ def _stream_response(
     stop_reason: str | None = None
     model: str = ""
     usage_data: dict = {}
+    slide_xmls: dict[int, str] = {}
 
     def _write(text: str) -> None:
         sys.stderr.write(text)
@@ -210,6 +272,11 @@ def _stream_response(
                             tool_blocks[current_block_idx]["input_json"] += partial
                             _write(partial)
 
+            elif event_type == "content_block_stop":
+                block_idx = getattr(event, "index", current_block_idx)
+                if block_idx in tool_blocks:
+                    _flush_tool_block(tool_blocks[block_idx], block_idx, slide_xmls, on_slide_ready)
+
             elif event_type == "message_delta":
                 delta = getattr(event, "delta", None)
                 if delta:
@@ -221,9 +288,7 @@ def _stream_response(
     content_text = "".join(content_parts)
     reasoning_text = "".join(reasoning_parts)
 
-    slide_xmls: dict[int, str] = {}
     tool_calls_raw: list[dict] = []
-
     for idx in sorted(tool_blocks.keys()):
         tb = tool_blocks[idx]
         tool_calls_raw.append({
@@ -232,21 +297,8 @@ def _stream_response(
             "name": tb["name"],
             "arguments_raw": tb["input_json"],
         })
-
-        if tb["name"] != "write_slide_xml":
-            logger.warning("Unexpected tool call: %s", tb["name"])
-            continue
-        try:
-            args = json.loads(tb["input_json"])
-        except json.JSONDecodeError:
-            logger.error("Failed to parse tool_use input (index %d)", idx)
-            continue
-
-        page_num = args.get("page_num")
-        slide_xml = args.get("slide_xml", "")
-        if page_num is not None:
-            slide_xmls[page_num] = slide_xml
-            logger.debug("Slide %3d: %d chars XML", page_num, len(slide_xml))
+        if idx not in {k for k in slide_xmls}:
+            _flush_tool_block(tb, idx, slide_xmls, on_slide_ready)
 
     slide_sizes = {str(p): len(x) for p, x in sorted(slide_xmls.items())}
     response_data: dict = {

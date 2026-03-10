@@ -61,7 +61,11 @@ def _build_messages_openai(
     enable_animations: bool,
     prompt_lang: str,
 ) -> list[dict]:
-    """Build OpenAI Chat Completions messages with image_url content blocks."""
+    """Build OpenAI Chat Completions messages with image_url content blocks.
+
+    Page labels use batch-local indices (0 to N-1) so the LLM returns
+    page_num values that match the batch_page_map in the caller.
+    """
     system_prompt = get_system_prompt_text(enable_animations, prompt_lang)
 
     messages: list[dict] = [
@@ -78,9 +82,8 @@ def _build_messages_openai(
         "text": f"Below are {n} slide page images to convert. Slide dimensions: {slide_w}pt × {slide_h}pt.",
     })
 
-    for img_bytes, meta in pages:
-        page_num = meta["page_num"]
-        user_content.append({"type": "text", "text": f"\n--- Page {page_num} ---"})
+    for batch_idx, (img_bytes, _meta) in enumerate(pages):
+        user_content.append({"type": "text", "text": f"\n--- Page {batch_idx} ---"})
         b64 = base64.b64encode(img_bytes).decode()
         user_content.append({
             "type": "image_url",
@@ -102,6 +105,8 @@ def _build_messages_anthropic(
     """Build Anthropic Messages API content blocks with base64 image sources.
 
     Note: system prompt is passed separately to the Anthropic API, not in messages.
+    Page labels use batch-local indices (0 to N-1) so the LLM returns
+    page_num values that match the batch_page_map in the caller.
     """
     user_content: list[dict] = []
     n = len(pages)
@@ -113,9 +118,8 @@ def _build_messages_anthropic(
         "text": f"Below are {n} slide page images to convert. Slide dimensions: {slide_w}pt × {slide_h}pt.",
     })
 
-    for img_bytes, meta in pages:
-        page_num = meta["page_num"]
-        user_content.append({"type": "text", "text": f"\n--- Page {page_num} ---"})
+    for batch_idx, (img_bytes, _meta) in enumerate(pages):
+        user_content.append({"type": "text", "text": f"\n--- Page {batch_idx} ---"})
         b64 = base64.b64encode(img_bytes).decode()
         user_content.append({
             "type": "image",

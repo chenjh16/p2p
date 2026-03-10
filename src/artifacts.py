@@ -43,9 +43,17 @@ class ArtifactStore:
         self.slides_dir = os.path.join(self.root, "slides")
         os.makedirs(self.pages_dir, exist_ok=True)
         os.makedirs(self.slides_dir, exist_ok=True)
-        self._api_response_idx = 0
-        self._stream_chunks_idx = 0
+        self._n_batches = 1
         logger.info("Artifact directory: %s/", self.root)
+
+    def set_batch_count(self, n: int) -> None:
+        """Set the total number of batches for zero-padded file naming."""
+        self._n_batches = max(n, 1)
+
+    def batch_suffix(self, batch_idx: int) -> str:
+        """Return a zero-padded batch suffix like ``_00``, ``_01``, etc."""
+        width = len(str(self._n_batches - 1)) if self._n_batches > 1 else 1
+        return f"_{batch_idx:0{width}d}"
 
     def save_page_images(self, pages: list[tuple[bytes, dict]]) -> None:
         """Write each page image to a PNG file in the pages directory."""
@@ -56,7 +64,9 @@ class ArtifactStore:
                 f.write(img_bytes)
         logger.info("Saved %d page images", len(pages))
 
-    def save_messages(self, messages: list[dict], pages_dir: str | None = None) -> None:
+    def save_messages(
+        self, messages: list[dict], pages_dir: str | None = None, batch_idx: int = 0,
+    ) -> None:
         """Save messages to JSON (light variant with paths, full with base64).
 
         Args:
@@ -64,13 +74,15 @@ class ArtifactStore:
             pages_dir: Directory containing page images, used to replace base64
                 data with file paths in the light variant. Defaults to
                 ``self.pages_dir``.
+            batch_idx: Batch index for file naming (0-based).
         """
+        suffix = self.batch_suffix(batch_idx)
         light = _strip_base64(messages, pages_dir or self.pages_dir)
-        with open(os.path.join(self.root, "messages.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(self.root, f"messages{suffix}.json"), "w", encoding="utf-8") as f:
             json.dump(light, f, ensure_ascii=False, indent=2)
-        with open(os.path.join(self.root, "messages_full.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(self.root, f"messages_full{suffix}.json"), "w", encoding="utf-8") as f:
             json.dump(messages, f, ensure_ascii=False)
-        logger.info("Saved messages (light + full)")
+        logger.info("Saved messages batch %d (light + full)", batch_idx)
 
     def save_system_prompt(self, prompt: str) -> None:
         """Write the system prompt to a markdown file."""
@@ -88,39 +100,42 @@ class ArtifactStore:
             json.dump(token_est, f, indent=2)
         logger.info("Saved token estimate")
 
-    def save_api_response(self, response_data: dict) -> None:
+    def save_api_response(self, response_data: dict, batch_idx: int = 0) -> None:
         """Write API response metadata to JSON."""
-        suffix = f"_{self._api_response_idx}" if self._api_response_idx > 0 else ""
+        suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"api_response{suffix}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(response_data, f, ensure_ascii=False, indent=2)
-        self._api_response_idx += 1
         logger.info("Saved API response → %s", os.path.basename(path))
 
-    def save_stream_chunks(self, chunks: list[dict]) -> None:
+    def save_stream_chunks(self, chunks: list[dict], batch_idx: int = 0) -> None:
         """Write raw stream chunks to JSONL."""
-        suffix = f"_{self._stream_chunks_idx}" if self._stream_chunks_idx > 0 else ""
+        suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"stream_chunks{suffix}.jsonl")
         with open(path, "w", encoding="utf-8") as f:
             for chunk in chunks:
                 f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
-        self._stream_chunks_idx += 1
         logger.info("Saved %d stream chunks → %s", len(chunks), os.path.basename(path))
 
-    def save_tool_calls(self, tool_calls: list[dict]) -> None:
+    def save_tool_calls(self, tool_calls: list[dict], batch_idx: int = 0) -> None:
         """Write tool call payloads to JSON."""
-        suffix = f"_{self._api_response_idx - 1}" if self._api_response_idx > 1 else ""
+        suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"tool_calls{suffix}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(tool_calls, f, ensure_ascii=False, indent=2)
         logger.info("Saved %d tool calls → %s", len(tool_calls), os.path.basename(path))
 
+    def save_slide_xml(self, page_num: int, xml_str: str) -> None:
+        """Write a single slide XML to disk immediately."""
+        path = os.path.join(self.slides_dir, f"slide_{page_num:03d}.xml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(xml_str)
+        logger.debug("Saved slide_%03d.xml (%d chars)", page_num, len(xml_str))
+
     def save_slide_xmls(self, slide_xmls: dict[int, str]) -> None:
         """Write each slide XML to a separate file in the slides directory."""
         for page_num, xml_str in sorted(slide_xmls.items()):
-            path = os.path.join(self.slides_dir, f"slide_{page_num:03d}.xml")
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(xml_str)
+            self.save_slide_xml(page_num, xml_str)
         logger.info("Saved %d slide XMLs", len(slide_xmls))
 
     def save_metadata(self, metadata: dict) -> None:
@@ -138,7 +153,7 @@ class ArtifactStore:
         """Write the model's thinking/reasoning output to a text file."""
         if not reasoning_text:
             return
-        suffix = f"_{batch_idx}" if batch_idx > 0 else ""
+        suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"reasoning{suffix}.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(reasoning_text)
@@ -148,7 +163,7 @@ class ArtifactStore:
         """Write the model's non-tool-call content output to a text file."""
         if not content_text:
             return
-        suffix = f"_{batch_idx}" if batch_idx > 0 else ""
+        suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"content{suffix}.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(content_text)

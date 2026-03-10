@@ -3,6 +3,23 @@
 from __future__ import annotations
 
 
+class TestAnthropicEffortLevel:
+    def test_effort_level_mapping(self):
+        from src.api_client_anthropic import _effort_level
+
+        assert _effort_level("low") == "low"
+        assert _effort_level("medium") == "medium"
+        assert _effort_level("high") == "high"
+        assert _effort_level("xhigh") == "max"
+
+    def test_effort_level_unknown_defaults_to_high(self):
+        from src.api_client_anthropic import _effort_level
+
+        assert _effort_level("none") == "high"
+        assert _effort_level("") == "high"
+        assert _effort_level("unknown") == "high"
+
+
 class TestAnthropicThinkingBudget:
     def test_thinking_budget_mapping(self):
         from src.api_client_anthropic import _thinking_budget

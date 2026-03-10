@@ -18,8 +18,6 @@ def run_continue(source_dir: str) -> None:
     then offers the user a choice: continue generating remaining pages, or
     proceed directly to PPTX assembly with whatever slides are available.
     """
-
-
     metadata_path = os.path.join(source_dir, "metadata.json")
     slides_dir = os.path.join(source_dir, "slides")
 
@@ -129,16 +127,34 @@ def _continue_generation(
 
     slide_xmls = dict(existing_xmls)
 
+    cont_slides_dir = os.path.join(source_dir, "slides")
+    os.makedirs(cont_slides_dir, exist_ok=True)
+
     for i in range(0, len(missing_page_data), batch_size):
         batch_pages = missing_page_data[i : i + batch_size]
+        batch_page_map = {
+            idx: p[1]["page_num"] for idx, p in enumerate(batch_pages)
+        }
         batch_label = f"continue batch (pages {[p[1]['page_num'] for p in batch_pages]})"
         logger.info("Building messages for %s", batch_label)
 
-        messages = build_messages(batch_pages, enable_animations=enable_animations, prompt_lang=prompt_lang, provider=provider)
-        token_est = estimate_tokens(messages, model=model_name, reasoning_effort=reasoning_effort, dpi=dpi, output_tps=output_tps)
+        messages = build_messages(
+            batch_pages, enable_animations=enable_animations,
+            prompt_lang=prompt_lang, provider=provider,
+        )
+        token_est = estimate_tokens(
+            messages, model=model_name, reasoning_effort=reasoning_effort,
+            dpi=dpi, output_tps=output_tps,
+        )
 
         stream_log = os.path.join(source_dir, f"stream_continue_{i}.log")
         logger.info("Calling LLM API for %s (%s)", batch_label, provider)
+
+        def _save_slide(batch_local_num: int, xml_str: str) -> None:
+            actual = batch_page_map.get(batch_local_num, batch_local_num)
+            path = os.path.join(cont_slides_dir, f"slide_{actual:03d}.xml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(xml_str)
 
         try:
             if provider == "anthropic":
@@ -152,6 +168,7 @@ def _continue_generation(
                     stream_log_path=stream_log,
                     reasoning_effort=reasoning_effort,
                     estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+                    on_slide_ready=_save_slide,
                 )
             else:
                 result = call_llm(
@@ -162,16 +179,12 @@ def _continue_generation(
                     stream_log_path=stream_log,
                     reasoning_effort=reasoning_effort,
                     estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+                    on_slide_ready=_save_slide,
                 )
 
-            if result.slide_xmls:
-                slide_xmls.update(result.slide_xmls)
-                # Save new slides to the existing artifact directory
-                slides_dir = os.path.join(source_dir, "slides")
-                os.makedirs(slides_dir, exist_ok=True)
-                for pnum, xml in result.slide_xmls.items():
-                    with open(os.path.join(slides_dir, f"slide_{pnum:03d}.xml"), "w", encoding="utf-8") as f:
-                        f.write(xml)
+            remapped = {batch_page_map.get(k, k): v for k, v in result.slide_xmls.items()}
+            if remapped:
+                slide_xmls.update(remapped)
                 logger.info("Received %d slides for %s", len(result.slide_xmls), batch_label)
             else:
                 logger.warning("No slides received for %s", batch_label)
