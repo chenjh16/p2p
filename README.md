@@ -24,6 +24,11 @@ The tool analyzes each slide image with the LLM and directly generates Presentat
 - **Batch Processing** — automatically splits large PDFs into batches with overlap for animation continuity
 - **Dry-Run Mode** — preview token usage and cost estimates without calling the API
 - **Full Artifact Logging** — saves all intermediate results (images, messages, API responses, reasoning, slide XMLs) to timestamped directories
+- **Error Recovery** — interactive retry/skip/quit when API calls fail mid-batch; preserves progress and allows partial assembly
+- **Continue Run** — resume incomplete conversions from a previous run directory (`--continue-run`)
+- **Replay** — re-run a previous conversion with the same parameters (`--replay`)
+- **Configurable TPS** — tune estimated output tokens-per-second for accurate time estimates (`--output-tps`, default 50)
+- **Auto Provider Detection** — automatically selects Anthropic API format when model name starts with `claude-`
 - **Bilingual Prompts** — system prompt available in English and Chinese (`--prompt-lang`)
 - **Optional Animations** — Morph transitions and entrance animations when adjacent slides have similar layouts (`--enable-animations`)
 
@@ -136,7 +141,7 @@ DRY-RUN SUMMARY
     Response time:  ~3200s (~53.3 min)
   Est. cost:        $0.6200
 ------------------------------------------------------------
-  Output TPS:       30 tok/s (reasoning=medium, ×1.5)
+  Output TPS:       50 tok/s (reasoning=medium, ×1.5)
 ============================================================
 ```
 
@@ -147,6 +152,13 @@ DRY-RUN SUMMARY
 p2p dummy --replay runs/run-slides-20260309-143052
 ```
 
+### 5. Continue an incomplete run
+
+```bash
+# Resume from where a previous run left off
+p2p dummy --continue-run runs/run-slides-20260310-161844
+```
+
 ## CLI Reference
 
 ```
@@ -155,8 +167,8 @@ usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
            [--dpi {96,144,192,288}] [--enable-animations]
            [--reasoning-effort {low,medium,high,xhigh}]
            [--prompt-lang {en,zh}] [--max-pages N] [--pages SPEC]
-           [--batch-size N] [--skip-postprocess]
-           [--dry-run] [--replay DIR]
+           [--batch-size N] [--output-tps TPS] [--skip-postprocess]
+           [--dry-run] [--replay DIR] [--continue-run DIR]
            [--log-level {DEBUG,INFO,WARNING,ERROR}]
            pdf
 ```
@@ -165,7 +177,7 @@ usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
 |---|---|---|---|
 | `pdf` | — | *(required)* | Input PDF file path |
 | `-o`, `--output` | — | `<basename>.pptx` | Output PPTX file path |
-| `--api-provider` | `LLM_PROVIDER` | `openai` | API provider: `openai` or `anthropic` |
+| `--api-provider` | `LLM_PROVIDER` | `openai` | API provider: `openai` or `anthropic` (auto-detected from model name) |
 | `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | `""` | API base URL |
 | `--api-key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | `""` | API key |
 | `--model-name` | `OPENAI_MODEL_NAME` / `ANTHROPIC_MODEL_NAME` | `gpt-5.4` | Model name |
@@ -176,9 +188,11 @@ usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
 | `--max-pages` | — | `5` | Max pages to convert (0=all); mutually exclusive with `--pages` |
 | `--pages` | — | `""` | Specific pages, e.g. `0,2,5-8`; mutually exclusive with `--max-pages` |
 | `--batch-size` | — | `0` (auto) | Pages per API call (0=auto based on gateway timeout) |
+| `--output-tps` | — | `50` | Assumed output tokens/second for time estimation |
 | `--skip-postprocess` | — | `off` | Skip raster image post-processing |
 | `--dry-run` | — | `off` | Estimate tokens and cost without calling API |
 | `--replay` | — | `""` | Replay a previous run from its artifact directory |
+| `--continue-run` | — | `""` | Resume an incomplete run from its artifact directory |
 | `--log-level` | — | `INFO` | Logging verbosity |
 
 ## Artifact Directories
@@ -252,7 +266,7 @@ The post-processor then:
 
 ### Batch Processing
 
-Batch size is auto-calculated based on a 600-second gateway timeout, the assumed output TPS (30 tok/s), and the reasoning effort multiplier. For large PDFs exceeding the batch size:
+Batch size is auto-calculated based on a 600-second gateway timeout, the assumed output TPS (50 tok/s, configurable via `--output-tps`), and the reasoning effort multiplier. For large PDFs exceeding the batch size:
 - Pages are split into overlapping batches (2-page overlap)
 - Each batch is processed in a separate API call
 - When animations are enabled, the later batch's version of overlapping pages is preferred for better transition context
@@ -277,10 +291,21 @@ p2p/
 │   ├── artifacts.py             # Artifact directory management (under runs/)
 │   ├── dry_run.py               # Dry-run mode implementation
 │   ├── replay.py                # Replay a previous run from saved parameters
+│   ├── continue_run.py          # Resume incomplete runs (--continue-run)
 │   └── logging_config.py        # Rich-based logging configuration
 ├── tests/
-│   ├── test_e2e.py              # End-to-end tests with mock LLM servers
-│   └── test_unit.py             # Unit tests for all modules
+│   ├── conftest.py              # Shared fixtures and mock servers
+│   ├── test_e2e.py              # Core pipeline e2e tests
+│   ├── test_error_recovery.py   # Error recovery e2e tests
+│   ├── test_continue_run.py     # --continue-run e2e tests
+│   ├── test_pdf_preprocessor.py # PDF preprocessing unit tests
+│   ├── test_message_builder.py  # Message building unit tests
+│   ├── test_token_estimator.py  # Token estimation unit tests
+│   ├── test_xml_validator.py    # XML validation unit tests
+│   ├── test_system_prompt.py    # System prompt unit tests
+│   ├── test_artifacts.py        # Artifact store unit tests
+│   ├── test_pptx_assembler.py   # PPTX assembly unit tests
+│   └── test_misc.py             # Anthropic budget + logging tests
 ├── docs/
 │   └── design.md                # Detailed design document (EN + ZH)
 ├── Makefile                     # Development and conversion commands
@@ -314,25 +339,22 @@ pylint src/
 python -m pytest tests/ -v
 ```
 
-The test suite includes:
+The test suite includes 84 tests across 11 focused modules:
 
-**End-to-end tests** (`test_e2e.py`):
-- **`test_dry_run`** / **`test_dry_run_anthropic`** — verifies dry-run artifact generation (OpenAI and Anthropic)
-- **`test_e2e_conversion`** / **`test_e2e_anthropic_conversion`** — full pipeline with mock streaming servers producing valid PPTX
-- **`test_xml_validator`** — XML validation and repair logic
+**End-to-end tests:**
+- `test_e2e.py` — core pipeline: dry-run, full conversion (OpenAI + Anthropic), custom output TPS
+- `test_error_recovery.py` — batch-level error recovery: retry, skip to post-processing, quit with metadata
+- `test_continue_run.py` — resume incomplete runs: post-process only, generate missing, quit, missing directory
 
-**Unit tests** (`test_unit.py`) — 68 tests covering:
-- `TestPdfPreprocessor` — page rendering, PNG output, metadata, DPI scaling
-- `TestSnapSlideDimensions` — aspect ratio detection and snapping
-- `TestMessageBuilder` — message structure, animation toggle, image embedding, bilingual prompts, task instructions
-- `TestTokenEstimator` — text/image token counting, cost estimation, response time, model-aware image tokens
-- `TestXmlValidator` — valid XML passthrough, fence stripping, declaration injection, ampersand fixing, namespace repair, fallback slides
-- `TestSystemPrompt` — EN/ZH prompts, animation sections, tool definitions (OpenAI + Anthropic), font calibration, table rules
-- `TestArtifactStore` — directory creation, dry-run/replay prefixes, input copying, image/params/reasoning/content/metadata saving, batch indexing
-- `TestPPTXAssembler` — single/multi slide assembly, dimensions, hyperlink handling
-- `TestMessageBuilderAnthropic` — Anthropic message format, image blocks, system prompt extraction
-- `TestAnthropicThinkingBudget` — thinking budget mapping for reasoning effort
-- `TestLoggingConfig` — setup and logger creation
+**Unit tests** (one module per source file):
+- `test_pdf_preprocessor.py` — page rendering, PNG output, metadata, DPI scaling, aspect ratio detection
+- `test_message_builder.py` — message structure, animation toggle, image embedding, bilingual prompts, Anthropic format
+- `test_token_estimator.py` — text/image token counting, cost estimation, response time, custom TPS, model-aware image tokens
+- `test_xml_validator.py` — valid XML passthrough, fence stripping, declaration injection, namespace repair, fallback slides
+- `test_system_prompt.py` — EN/ZH prompts, animation sections, tool definitions (OpenAI + Anthropic), font calibration
+- `test_artifacts.py` — directory creation, dry-run/replay prefixes, input copying, metadata/params/reasoning saving
+- `test_pptx_assembler.py` — single/multi slide assembly, dimensions, hyperlink handling
+- `test_misc.py` — Anthropic thinking budget mapping, logging configuration
 
 ### Code Quality
 
@@ -387,6 +409,11 @@ This project is licensed under the [MIT License](LICENSE).
 - **批量处理** — 自动将大型 PDF 分批处理，批次间有重叠以保持动画连续性
 - **试运行模式** — 无需调用 API 即可预览 token 用量和成本估算
 - **完整产物日志** — 将所有中间结果（图像、消息、API 响应、推理、幻灯片 XML）保存到带时间戳的目录
+- **错误恢复** — API 调用失败时交互式重试/跳过/退出；保留已完成进度，支持部分组装
+- **继续运行** — 从之前的运行目录恢复未完成的转换（`--continue-run`）
+- **重放** — 使用相同参数重新运行之前的转换（`--replay`）
+- **可配置 TPS** — 调整预估输出 token 速率以获得准确的时间估算（`--output-tps`，默认 50）
+- **自动提供商检测** — 当模型名称以 `claude-` 开头时自动选择 Anthropic API 格式
 - **双语提示词** — 系统提示词支持英文和中文（`--prompt-lang`）
 - **可选动画** — 当相邻幻灯片布局相似时添加 Morph 转场和入场动画（`--enable-animations`）
 
@@ -499,7 +526,7 @@ DRY-RUN SUMMARY
     Response time:  ~3200s (~53.3 min)
   Est. cost:        $0.6200
 ------------------------------------------------------------
-  Output TPS:       30 tok/s (reasoning=medium, ×1.5)
+  Output TPS:       50 tok/s (reasoning=medium, ×1.5)
 ============================================================
 ```
 
@@ -510,6 +537,13 @@ DRY-RUN SUMMARY
 p2p dummy --replay runs/run-slides-20260309-143052
 ```
 
+### 5. 继续未完成的运行
+
+```bash
+# 从之前中断的运行恢复
+p2p dummy --continue-run runs/run-slides-20260310-161844
+```
+
 ## 命令行参数
 
 ```
@@ -518,8 +552,8 @@ p2p dummy --replay runs/run-slides-20260309-143052
           [--dpi {96,144,192,288}] [--enable-animations]
           [--reasoning-effort {low,medium,high,xhigh}]
           [--prompt-lang {en,zh}] [--max-pages N] [--pages SPEC]
-          [--batch-size N] [--skip-postprocess]
-          [--dry-run] [--replay DIR]
+          [--batch-size N] [--output-tps TPS] [--skip-postprocess]
+          [--dry-run] [--replay DIR] [--continue-run DIR]
           [--log-level {DEBUG,INFO,WARNING,ERROR}]
           pdf
 ```
@@ -528,7 +562,7 @@ p2p dummy --replay runs/run-slides-20260309-143052
 |---|---|---|---|
 | `pdf` | — | *（必填）* | 输入 PDF 文件路径 |
 | `-o`, `--output` | — | `<文件名>.pptx` | 输出 PPTX 文件路径 |
-| `--api-provider` | `LLM_PROVIDER` | `openai` | API 提供商：`openai` 或 `anthropic` |
+| `--api-provider` | `LLM_PROVIDER` | `openai` | API 提供商：`openai` 或 `anthropic`（可从模型名自动检测） |
 | `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | `""` | API 基础 URL |
 | `--api-key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | `""` | API 密钥 |
 | `--model-name` | `OPENAI_MODEL_NAME` / `ANTHROPIC_MODEL_NAME` | `gpt-5.4` | 模型名称 |
@@ -539,9 +573,11 @@ p2p dummy --replay runs/run-slides-20260309-143052
 | `--max-pages` | — | `5` | 最大转换页数（0=全部）；与 `--pages` 互斥 |
 | `--pages` | — | `""` | 指定页面，如 `0,2,5-8`；与 `--max-pages` 互斥 |
 | `--batch-size` | — | `0`（自动） | 每次 API 调用的页数（0=根据网关超时自动计算） |
+| `--output-tps` | — | `50` | 预估输出 token 速率（tok/s），用于时间估算 |
 | `--skip-postprocess` | — | `关闭` | 跳过光栅图像后处理 |
 | `--dry-run` | — | `关闭` | 估算 token 和成本，不调用 API |
 | `--replay` | — | `""` | 从产物目录重放之前的运行 |
+| `--continue-run` | — | `""` | 从产物目录恢复未完成的运行 |
 | `--log-level` | — | `INFO` | 日志详细程度 |
 
 ## 产物目录
@@ -615,7 +651,7 @@ __LLMCLIP__:[x1, y1][x2, y2]
 
 ### 批量处理
 
-批次大小根据 600 秒网关超时、假设的输出速度（30 tok/s）和推理强度倍率自动计算。对于超过批次大小的大型 PDF：
+批次大小根据 600 秒网关超时、假设的输出速度（50 tok/s，可通过 `--output-tps` 配置）和推理强度倍率自动计算。对于超过批次大小的大型 PDF：
 - 页面被分为有重叠的批次（2 页重叠）
 - 每个批次通过单独的 API 调用处理
 - 启用动画时，重叠页面优先使用后一批次的版本以获得更好的转场上下文
@@ -640,10 +676,21 @@ p2p/
 │   ├── artifacts.py             # 产物目录管理（runs/ 下）
 │   ├── dry_run.py               # 试运行模式实现
 │   ├── replay.py                # 从保存的参数重放之前的运行
+│   ├── continue_run.py          # 恢复未完成的运行（--continue-run）
 │   └── logging_config.py        # 基于 Rich 的日志配置
 ├── tests/
-│   ├── test_e2e.py              # 端到端测试（含模拟 LLM 服务器）
-│   └── test_unit.py             # 所有模块的单元测试
+│   ├── conftest.py              # 共享 fixtures 和模拟服务器
+│   ├── test_e2e.py              # 核心流程端到端测试
+│   ├── test_error_recovery.py   # 错误恢复端到端测试
+│   ├── test_continue_run.py     # --continue-run 端到端测试
+│   ├── test_pdf_preprocessor.py # PDF 预处理单元测试
+│   ├── test_message_builder.py  # 消息构建单元测试
+│   ├── test_token_estimator.py  # Token 估算单元测试
+│   ├── test_xml_validator.py    # XML 验证单元测试
+│   ├── test_system_prompt.py    # 系统提示词单元测试
+│   ├── test_artifacts.py        # 产物存储单元测试
+│   ├── test_pptx_assembler.py   # PPTX 组装单元测试
+│   └── test_misc.py             # Anthropic 预算 + 日志测试
 ├── docs/
 │   └── design.md                # 详细设计文档（中英双语）
 ├── Makefile                     # 开发和转换命令
@@ -677,25 +724,22 @@ pylint src/
 python -m pytest tests/ -v
 ```
 
-测试套件包括：
+测试套件包含 84 项测试，分布在 11 个专注模块中：
 
-**端到端测试**（`test_e2e.py`）：
-- **`test_dry_run`** / **`test_dry_run_anthropic`** — 验证试运行产物生成（OpenAI 和 Anthropic）
-- **`test_e2e_conversion`** / **`test_e2e_anthropic_conversion`** — 使用模拟流式服务器的完整流程测试
-- **`test_xml_validator`** — XML 验证和修复逻辑
+**端到端测试：**
+- `test_e2e.py` — 核心流程：试运行、完整转换（OpenAI + Anthropic）、自定义输出 TPS
+- `test_error_recovery.py` — 批次级错误恢复：重试、跳过到后处理、退出并保存元数据
+- `test_continue_run.py` — 恢复未完成运行：仅后处理、生成缺失页、退出、目录不存在
 
-**单元测试**（`test_unit.py`）— 68 项测试覆盖：
-- `TestPdfPreprocessor` — 页面渲染、PNG 输出、元数据、DPI 缩放
-- `TestSnapSlideDimensions` — 宽高比检测和对齐
-- `TestMessageBuilder` — 消息结构、动画开关、图像嵌入、双语提示词、任务指令
-- `TestTokenEstimator` — 文本/图像 token 计数、成本估算、响应时间、模型感知的图像 token
-- `TestXmlValidator` — 有效 XML 透传、围栏去除、声明注入、& 符号修复、命名空间修复、回退幻灯片
-- `TestSystemPrompt` — 中英文提示词、动画部分、工具定义（OpenAI + Anthropic）、字体校准、表格规则
-- `TestArtifactStore` — 目录创建、试运行/重放前缀、输入复制、图像/参数/推理/内容/元数据保存、批次索引
-- `TestPPTXAssembler` — 单页/多页组装、尺寸、超链接处理
-- `TestMessageBuilderAnthropic` — Anthropic 消息格式、图像块、系统提示词提取
-- `TestAnthropicThinkingBudget` — 推理强度的思考预算映射
-- `TestLoggingConfig` — 日志设置和 logger 创建
+**单元测试**（每个源文件一个测试模块）：
+- `test_pdf_preprocessor.py` — 页面渲染、PNG 输出、元数据、DPI 缩放、宽高比检测
+- `test_message_builder.py` — 消息结构、动画开关、图像嵌入、双语提示词、Anthropic 格式
+- `test_token_estimator.py` — 文本/图像 token 计数、成本估算、响应时间、自定义 TPS、模型感知图像 token
+- `test_xml_validator.py` — 有效 XML 透传、围栏去除、声明注入、命名空间修复、回退幻灯片
+- `test_system_prompt.py` — 中英文提示词、动画部分、工具定义（OpenAI + Anthropic）、字体校准
+- `test_artifacts.py` — 目录创建、试运行/重放前缀、输入复制、元数据/参数/推理保存
+- `test_pptx_assembler.py` — 单页/多页组装、尺寸、超链接处理
+- `test_misc.py` — Anthropic 思考预算映射、日志配置
 
 ### 代码质量
 

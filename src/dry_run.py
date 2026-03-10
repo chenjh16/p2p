@@ -11,7 +11,7 @@ from .logging_config import get_logger
 from .message_builder import build_messages, get_system_prompt_text
 from .pdf_preprocessor import pdf_to_images
 from .system_prompt import WRITE_SLIDE_XML_TOOL, WRITE_SLIDE_XML_TOOL_ANTHROPIC
-from .token_estimator import ASSUMED_OUTPUT_TPS, estimate_tokens, recommend_batch_size
+from .token_estimator import estimate_tokens, recommend_batch_size
 
 logger = get_logger("dry_run")
 
@@ -27,30 +27,40 @@ def run_dry(
     reasoning_effort: str = "medium",
     provider: str = "openai",
     page_indices: list[int] | None = None,
+    run_params: dict | None = None,
+    output_tps: float = 0,
 ) -> str:
-    """Execute dry-run: prepare everything before the API call and export artifacts."""
+    """Execute dry-run: prepare everything before the API call and export artifacts.
+
+    ``run_params`` should contain only the CLI arguments explicitly provided by
+    the user.  If *None*, a full parameter dict is saved for backward compat.
+    ``output_tps`` overrides the assumed output tokens/second (0 = module default).
+    """
     store = ArtifactStore(pdf_path=pdf_path, dry_run=True)
     store.copy_input(pdf_path)
 
     # Auto-calculate batch size if not specified (0 = auto)
     batch_size_auto = batch_size <= 0
     if batch_size_auto:
-        batch_size = recommend_batch_size(reasoning_effort=reasoning_effort)
+        batch_size = recommend_batch_size(reasoning_effort=reasoning_effort, output_tps=output_tps)
         logger.info("Auto batch size: %d pages (gateway timeout 600s, reasoning=%s)", batch_size, reasoning_effort)
 
-    store.save_run_params({
-        "pdf": os.path.abspath(pdf_path),
-        "api_provider": provider,
-        "dpi": dpi,
-        "enable_animations": enable_animations,
-        "model_name": model_name,
-        "max_pages": max_pages,
-        "page_indices": page_indices,
-        "batch_size": batch_size if not batch_size_auto else 0,
-        "prompt_lang": prompt_lang,
-        "reasoning_effort": reasoning_effort,
-        "dry_run": True,
-    })
+    if run_params is not None:
+        store.save_run_params(run_params)
+    else:
+        store.save_run_params({
+            "pdf": os.path.abspath(pdf_path),
+            "api_provider": provider,
+            "dpi": dpi,
+            "enable_animations": enable_animations,
+            "model_name": model_name,
+            "max_pages": max_pages,
+            "page_indices": page_indices,
+            "batch_size": batch_size if not batch_size_auto else 0,
+            "prompt_lang": prompt_lang,
+            "reasoning_effort": reasoning_effort,
+            "dry_run": True,
+        })
 
     # Step 1: PDF preprocessing
     all_pages = pdf_to_images(pdf_path, dpi=dpi)
@@ -81,7 +91,7 @@ def run_dry(
 
     # Step 3: Token estimation (based on first batch, not all pages)
     logger.info("Estimating tokens...")
-    token_est = estimate_tokens(batch_messages, model=model_name, reasoning_effort=reasoning_effort, dpi=dpi)
+    token_est = estimate_tokens(batch_messages, model=model_name, reasoning_effort=reasoning_effort, dpi=dpi, output_tps=output_tps)
     store.save_token_estimate(token_est)
 
     # Estimate totals across all batches
@@ -107,7 +117,7 @@ def run_dry(
             "page_indices": page_indices,
             "batch_size": batch_size,
             "batch_size_auto": batch_size_auto,
-            "recommended_batch_size": recommend_batch_size(reasoning_effort=reasoning_effort),
+            "recommended_batch_size": recommend_batch_size(reasoning_effort=reasoning_effort, output_tps=output_tps),
             "gateway_timeout_seconds": 600,
         },
         "pdf_pages": n_pages,
@@ -119,7 +129,7 @@ def run_dry(
         "total_estimated_output_tokens": total_output,
         "total_estimated_tokens": total_input + total_output,
         "total_estimated_response_seconds": round(total_time, 1),
-        "assumed_output_tps": ASSUMED_OUTPUT_TPS,
+        "assumed_output_tps": token_est["assumed_output_tps"],
     })
 
     # Print summary
@@ -165,7 +175,7 @@ def run_dry(
     logger.info("-" * 60)
     logger.info(
         "  Output TPS:       %.0f tok/s (reasoning=%s, ×%.1f)",
-        ASSUMED_OUTPUT_TPS,
+        token_est["assumed_output_tps"],
         reasoning_effort,
         token_est["reasoning_multiplier"],
     )

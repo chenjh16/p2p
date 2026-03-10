@@ -237,11 +237,14 @@ def run_replay(source_dir: str) -> None:
     else:
         intermediate = output_name + ".tmp"
         assembler.save(intermediate)
+        sorted_slide_keys = sorted(slide_xmls.keys())
+        pdf_page_map = [pages[k][1]["page_num"] for k in sorted_slide_keys if k < len(pages)]
         postprocess_raster_fills(
             pptx_path=intermediate,
             pdf_path=pdf_path,
             output_path=output_name,
             dpi=300,
+            page_indices=pdf_page_map if page_indices is not None else None,
         )
         with contextlib.suppress(OSError):
             os.remove(intermediate)

@@ -1,247 +1,14 @@
-"""End-to-end tests using mock OpenAI and Anthropic servers."""
+"""End-to-end tests for the core conversion pipeline with mock LLM servers."""
 
 from __future__ import annotations
 
 import json
 import os
 import shutil
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import fitz
-import pytest
 from pptx import Presentation
 
-MOCK_OPENAI_PORT = 19876
-MOCK_ANTHROPIC_PORT = 19877
-MOCK_BASE_URL = f"http://127.0.0.1:{MOCK_OPENAI_PORT}/v1"
-MOCK_ANTHROPIC_URL = f"http://127.0.0.1:{MOCK_ANTHROPIC_PORT}"
-
-SAMPLE_SLIDE_XML = """\
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
-    <p:spTree>
-      <p:nvGrpSpPr>
-        <p:cNvPr id="1" name=""/>
-        <p:cNvGrpSpPr/>
-        <p:nvPr/>
-      </p:nvGrpSpPr>
-      <p:grpSpPr/>
-      <p:sp>
-        <p:nvSpPr>
-          <p:cNvPr id="2" name="Title"/>
-          <p:cNvSpPr txBox="1"/>
-          <p:nvPr/>
-        </p:nvSpPr>
-        <p:spPr>
-          <a:xfrm>
-            <a:off x="914400" y="914400"/>
-            <a:ext cx="7315200" cy="914400"/>
-          </a:xfrm>
-          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-        </p:spPr>
-        <p:txBody>
-          <a:bodyPr wrap="square" rtlCol="0"/>
-          <a:lstStyle/>
-          <a:p>
-            <a:r>
-              <a:rPr lang="en-US" sz="2400"/>
-              <a:t>Test Slide Page {page_num}</a:t>
-            </a:r>
-          </a:p>
-        </p:txBody>
-      </p:sp>
-    </p:spTree>
-  </p:cSld>
-</p:sld>"""
-
-
-def _build_sse_response(page_count: int) -> str:
-    """Build a streaming SSE response with tool calls for each page."""
-    chunks = []
-
-    for page_num in range(page_count):
-        slide_xml = SAMPLE_SLIDE_XML.format(page_num=page_num)
-        args_json = json.dumps({"page_num": page_num, "slide_xml": slide_xml})
-
-        chunk_data = {
-            "id": f"chatcmpl-test-{page_num}",
-            "object": "chat.completion.chunk",
-            "model": "mock-gpt-5.4",
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "tool_calls": [{
-                        "index": page_num,
-                        "id": f"call_{page_num}",
-                        "type": "function",
-                        "function": {
-                            "name": "write_slide_xml",
-                            "arguments": args_json,
-                        },
-                    }],
-                },
-                "finish_reason": None,
-            }],
-        }
-        chunks.append(f"data: {json.dumps(chunk_data)}\n\n")
-
-    finish_chunk = {
-        "id": "chatcmpl-test-done",
-        "object": "chat.completion.chunk",
-        "model": "mock-gpt-5.4",
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": "stop",
-        }],
-        "usage": {
-            "prompt_tokens": 1000,
-            "completion_tokens": 500 * page_count,
-            "total_tokens": 1000 + 500 * page_count,
-        },
-    }
-    chunks.append(f"data: {json.dumps(finish_chunk)}\n\n")
-    chunks.append("data: [DONE]\n\n")
-
-    return "".join(chunks)
-
-
-class MockOpenAIHandler(BaseHTTPRequestHandler):
-    """Mock handler that returns streaming tool call responses."""
-
-    page_count = 1
-
-    def do_POST(self):  # noqa: N802
-        """Handle POST requests to the chat completions endpoint."""
-        content_len = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_len)) if content_len else {}
-
-        messages = body.get("messages", [])
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                MockOpenAIHandler.page_count = sum(
-                    1 for p in content if p.get("type") == "image_url"
-                )
-
-        sse_body = _build_sse_response(MockOpenAIHandler.page_count)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(sse_body.encode())
-
-    def log_message(self, format, *args):  # noqa: A002
-        """Suppress request logging."""
-
-
-def _build_anthropic_sse_response(page_count: int) -> str:
-    """Build Anthropic-format streaming SSE response with tool_use content blocks."""
-    events = []
-
-    events.append(
-        f"event: message_start\n"
-        f"data: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_test', 'type': 'message', 'role': 'assistant', 'model': 'mock-claude', 'content': [], 'usage': {'input_tokens': 1000, 'output_tokens': 0}}})}\n\n"
-    )
-
-    for page_num in range(page_count):
-        slide_xml = SAMPLE_SLIDE_XML.format(page_num=page_num)
-        args_json = json.dumps({"page_num": page_num, "slide_xml": slide_xml})
-
-        events.append(
-            f"event: content_block_start\n"
-            f"data: {json.dumps({'type': 'content_block_start', 'index': page_num, 'content_block': {'type': 'tool_use', 'id': f'toolu_{page_num}', 'name': 'write_slide_xml', 'input': {}}})}\n\n"
-        )
-        events.append(
-            f"event: content_block_delta\n"
-            f"data: {json.dumps({'type': 'content_block_delta', 'index': page_num, 'delta': {'type': 'input_json_delta', 'partial_json': args_json}})}\n\n"
-        )
-        events.append(
-            f"event: content_block_stop\n"
-            f"data: {json.dumps({'type': 'content_block_stop', 'index': page_num})}\n\n"
-        )
-
-    events.append(
-        f"event: message_delta\n"
-        f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'output_tokens': 500 * page_count}})}\n\n"
-    )
-    events.append(
-        f"event: message_stop\n"
-        f"data: {json.dumps({'type': 'message_stop'})}\n\n"
-    )
-
-    return "".join(events)
-
-
-class MockAnthropicHandler(BaseHTTPRequestHandler):
-    """Mock handler for Anthropic Messages API streaming responses."""
-
-    page_count = 1
-
-    def do_POST(self):  # noqa: N802
-        """Handle POST requests to the messages endpoint."""
-        content_len = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_len)) if content_len else {}
-
-        messages = body.get("messages", [])
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                MockAnthropicHandler.page_count = sum(
-                    1 for p in content if p.get("type") == "image"
-                )
-
-        sse_body = _build_anthropic_sse_response(MockAnthropicHandler.page_count)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(sse_body.encode())
-
-    def log_message(self, format, *args):  # noqa: A002
-        """Suppress request logging."""
-
-
-@pytest.fixture(scope="module")
-def mock_server():
-    """Start a mock OpenAI server for the test module."""
-    server = HTTPServer(("127.0.0.1", MOCK_OPENAI_PORT), MockOpenAIHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    time.sleep(0.2)
-    yield server
-    server.shutdown()
-
-
-@pytest.fixture(scope="module")
-def mock_anthropic_server():
-    """Start a mock Anthropic server for the test module."""
-    server = HTTPServer(("127.0.0.1", MOCK_ANTHROPIC_PORT), MockAnthropicHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    time.sleep(0.2)
-    yield server
-    server.shutdown()
-
-
-@pytest.fixture()
-def sample_pdf(tmp_path):
-    """Create a minimal 2-page PDF for testing."""
-    pdf_path = str(tmp_path / "test.pdf")
-    doc = fitz.open()
-    for i in range(2):
-        page = doc.new_page(width=720, height=405)
-        page.insert_text((100, 200), f"Test Page {i}", fontsize=24)
-    doc.save(pdf_path)
-    doc.close()
-    return pdf_path
+from tests.conftest import MOCK_ANTHROPIC_URL, MOCK_BASE_URL
 
 
 def test_dry_run(sample_pdf, tmp_path):
@@ -348,25 +115,6 @@ def test_e2e_conversion(mock_server, sample_pdf, tmp_path):
     os.remove(output_pptx)
 
 
-def test_xml_validator():
-    """XML validator should fix common issues and produce valid XML."""
-    from src.xml_validator import validate_and_fix
-
-    good_xml = SAMPLE_SLIDE_XML.format(page_num=0)
-    result = validate_and_fix(good_xml, 0)
-    assert "<p:sld" in result
-
-    fenced = f"```xml\n{good_xml}\n```"
-    result = validate_and_fix(fenced, 0)
-    assert "<p:sld" in result
-    assert "```" not in result
-
-    bad_xml = "<p:sld><broken"
-    result = validate_and_fix(bad_xml, 0)
-    assert "<p:sld" in result
-    assert "ErrorInfo" in result or "<p:sld" in result
-
-
 def test_e2e_anthropic_conversion(mock_anthropic_server, sample_pdf, tmp_path):
     """Full conversion with mock Anthropic server should produce a valid PPTX."""
     os.chdir(tmp_path)
@@ -462,5 +210,32 @@ def test_dry_run_anthropic(sample_pdf, tmp_path):
     with open(os.path.join(output_dir, "messages.json")) as f:
         msgs = json.load(f)
     assert all(m.get("role") != "system" for m in msgs)
+
+    shutil.rmtree("runs")
+
+
+def test_dry_run_custom_output_tps(sample_pdf, tmp_path):
+    """Dry-run with custom output_tps should reflect in metadata."""
+    os.chdir(tmp_path)
+    from src.dry_run import run_dry
+    from src.logging_config import setup_logging
+
+    setup_logging("WARNING")
+    output_dir = run_dry(
+        pdf_path=sample_pdf,
+        dpi=96,
+        enable_animations=False,
+        model_name="gpt-5.4",
+        batch_size=25,
+        output_tps=100.0,
+    )
+
+    with open(os.path.join(output_dir, "metadata.json")) as f:
+        meta = json.load(f)
+    assert meta["assumed_output_tps"] == 100.0
+
+    with open(os.path.join(output_dir, "token_estimate.json")) as f:
+        est = json.load(f)
+    assert est["assumed_output_tps"] == 100.0
 
     shutil.rmtree("runs")

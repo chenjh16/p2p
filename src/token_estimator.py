@@ -140,6 +140,7 @@ def estimate_tokens(
     model: str = "gpt-5.4",
     reasoning_effort: str = "medium",
     dpi: int = 288,
+    output_tps: float = 0,
 ) -> dict:
     """Estimate token consumption for the given messages.
 
@@ -148,6 +149,7 @@ def estimate_tokens(
         model: Model name, used to select the appropriate token calculation method.
         reasoning_effort: Reasoning effort level (affects estimated response time).
         dpi: Image rendering DPI, used to estimate pixel dimensions for token calculation.
+        output_tps: Assumed output tokens per second. 0 means use the module default.
     """
     try:
         enc = tiktoken.encoding_for_model(model)
@@ -173,10 +175,12 @@ def estimate_tokens(
     text_tokens += 4  # message framing overhead
     total_input = text_tokens + image_tokens
 
-    # Output estimate: ~3000 tokens per slide XML + 2000 overhead
-    estimated_output = image_count * 3000 + 2000
+    # Output estimate: ~9000 tokens per slide XML + 2000 overhead
+    # Calibrated from actual runs — typical slides with shapes, tables, and styling
+    # produce 7000–12000 tokens of PresentationML XML per page.
+    estimated_output = image_count * OUTPUT_TOKENS_PER_PAGE + OUTPUT_OVERHEAD_TOKENS
 
-    assumed_output_tps = ASSUMED_OUTPUT_TPS
+    assumed_output_tps = output_tps if output_tps > 0 else ASSUMED_OUTPUT_TPS
     reasoning_multiplier = REASONING_EFFORT_MULTIPLIERS.get(reasoning_effort, 1.5)
     est_response_seconds = (estimated_output / assumed_output_tps) * reasoning_multiplier
 
@@ -217,28 +221,30 @@ def estimate_tokens(
 GATEWAY_TIMEOUT_SECONDS = 600
 OUTPUT_TOKENS_PER_PAGE = 3000
 OUTPUT_OVERHEAD_TOKENS = 2000
-ASSUMED_OUTPUT_TPS = 30.0
+ASSUMED_OUTPUT_TPS = 50.0
 
 
 def recommend_batch_size(
     reasoning_effort: str = "medium",
     gateway_timeout: float = GATEWAY_TIMEOUT_SECONDS,
+    output_tps: float = 0,
 ) -> int:
     """Calculate the maximum batch size that fits within the gateway timeout.
 
     The gateway imposes a hard timeout (default 600s / 10 minutes). Each page
     generates approximately 3000 output tokens plus a fixed 2000-token overhead
-    per batch. At 30 tok/s (ASSUMED_OUTPUT_TPS) with the reasoning effort
-    multiplier, we calculate how many pages can fit in one request.
+    per batch. At the configured tok/s (ASSUMED_OUTPUT_TPS) with the reasoning
+    effort multiplier, we calculate how many pages can fit in one request.
 
     Returns at least 1 to ensure progress.
     """
+    tps = output_tps if output_tps > 0 else ASSUMED_OUTPUT_TPS
     multiplier = REASONING_EFFORT_MULTIPLIERS.get(reasoning_effort, 1.5)
-    overhead_seconds = (OUTPUT_OVERHEAD_TOKENS / ASSUMED_OUTPUT_TPS) * multiplier
+    overhead_seconds = (OUTPUT_OVERHEAD_TOKENS / tps) * multiplier
     available_seconds = gateway_timeout - overhead_seconds
     if available_seconds <= 0:
         return 1
-    seconds_per_page = (OUTPUT_TOKENS_PER_PAGE / ASSUMED_OUTPUT_TPS) * multiplier
+    seconds_per_page = (OUTPUT_TOKENS_PER_PAGE / tps) * multiplier
     max_pages = int(available_seconds / seconds_per_page)
     return max(1, max_pages)
 

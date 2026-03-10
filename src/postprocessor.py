@@ -22,8 +22,15 @@ def postprocess_raster_fills(
     pdf_path: str,
     output_path: str,
     dpi: int = 300,
+    page_indices: list[int] | None = None,
 ) -> None:
-    """Scan PPTX for __LLMCLIP__ placeholders and fill them with cropped PDF regions."""
+    """Scan PPTX for __LLMCLIP__ placeholders and fill them with cropped PDF regions.
+
+    ``page_indices`` maps each PPTX slide position to the original PDF page
+    number.  For example, if the user converted pages [0, 3, 5], then
+    ``page_indices=[0, 3, 5]`` so PPTX slide 1 clips from PDF page 3.
+    When *None*, a 1:1 identity mapping is assumed (slide 0 → page 0, etc.).
+    """
     prs = Presentation(pptx_path)
     doc = fitz.open(pdf_path)
     fill_count = 0
@@ -31,13 +38,22 @@ def postprocess_raster_fills(
     logger.info("Scanning for raster placeholders...")
 
     for slide_idx, slide in enumerate(prs.slides):
-        if slide_idx >= doc.page_count:
+        if page_indices is not None:
+            if slide_idx >= len(page_indices):
+                logger.warning("Slide %d has no page mapping, skipping", slide_idx)
+                continue
+            pdf_page_num = page_indices[slide_idx]
+        else:
+            pdf_page_num = slide_idx
+
+        if pdf_page_num >= doc.page_count:
             logger.warning(
-                "Slide %d has no corresponding PDF page, skipping", slide_idx
+                "Slide %d maps to PDF page %d which doesn't exist, skipping",
+                slide_idx, pdf_page_num,
             )
             continue
 
-        page = doc[slide_idx]
+        page = doc[pdf_page_num]
         shapes_to_replace: list[tuple] = []
 
         for shape in slide.shapes:
@@ -74,8 +90,9 @@ def postprocess_raster_fills(
 
         if shapes_to_replace:
             logger.info(
-                "  Slide %3d: %d placeholders filled",
+                "  Slide %3d → PDF page %3d: %d placeholders filled",
                 slide_idx,
+                pdf_page_num,
                 len(shapes_to_replace),
             )
 
