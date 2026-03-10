@@ -292,7 +292,7 @@ Batch size is auto-calculated based on a 600-second gateway timeout, the assumed
 ```
 p2p/
 ├── src/
-│   ├── __init__.py              # Package init
+│   ├── __init__.py              # ApiConfig dataclass
 │   ├── __main__.py              # python -m src entry point
 │   ├── main.py                  # CLI entry point and pipeline orchestration
 │   ├── system_prompt.py         # System prompts (EN/ZH) and tool definitions
@@ -697,7 +697,7 @@ __LLMCLIP__:[x1, y1][x2, y2]
 ```
 p2p/
 ├── src/
-│   ├── __init__.py              # 包初始化
+│   ├── __init__.py              # ApiConfig 数据类
 │   ├── __main__.py              # python -m src 入口
 │   ├── main.py                  # CLI 入口和流程编排
 │   ├── system_prompt.py         # 系统提示词（中/英）和工具定义

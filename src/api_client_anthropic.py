@@ -10,6 +10,7 @@ from collections.abc import Callable
 import anthropic
 import httpx
 
+from . import ApiConfig
 from .api_client import LLMResult
 from .logging_config import get_logger
 from .system_prompt import WRITE_SLIDE_XML_TOOL_ANTHROPIC
@@ -17,12 +18,13 @@ from .system_prompt import WRITE_SLIDE_XML_TOOL_ANTHROPIC
 logger = get_logger("api_anthropic")
 
 
+_DEFAULT_API_CFG = ApiConfig()
+
+
 def call_anthropic(
     messages: list[dict],
     system_prompt: str,
-    api_key: str = "",
-    api_base_url: str = "",
-    model_name: str = "claude-opus-4-6",
+    api_cfg: ApiConfig = _DEFAULT_API_CFG,
     max_tokens: int = 128000,
     stream_log_path: str = "",
     reasoning_effort: str = "medium",
@@ -41,10 +43,10 @@ def call_anthropic(
     timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout)
 
     client_kwargs: dict = {"timeout": timeout, "max_retries": 0}
-    if api_key:
-        client_kwargs["api_key"] = api_key
-    if api_base_url:
-        client_kwargs["base_url"] = api_base_url
+    if api_cfg.api_key:
+        client_kwargs["api_key"] = api_cfg.api_key
+    if api_cfg.api_base_url:
+        client_kwargs["base_url"] = api_cfg.api_base_url
     client = anthropic.Anthropic(**client_kwargs)
 
     tools = [WRITE_SLIDE_XML_TOOL_ANTHROPIC]
@@ -57,13 +59,13 @@ def call_anthropic(
     )
     logger.info(
         "Calling %s API (streaming, tool_use, max_tokens=%d)...",
-        model_name,
+        api_cfg.model_name,
         max_tokens,
     )
     t0 = time.time()
 
     create_kwargs: dict = {
-        "model": model_name,
+        "model": api_cfg.model_name,
         "system": system_prompt,
         "messages": messages,
         "tools": tools,
@@ -71,7 +73,9 @@ def call_anthropic(
         "max_tokens": max_tokens,
     }
 
-    is_adaptive_model = any(model_name.startswith(p) for p in ("claude-opus-4-6", "claude-sonnet-4-6"))
+    is_adaptive_model = any(
+        api_cfg.model_name.startswith(p) for p in ("claude-opus-4-6", "claude-sonnet-4-6")
+    )
 
     if is_adaptive_model:
         create_kwargs["thinking"] = {"type": "adaptive"}
@@ -85,8 +89,8 @@ def call_anthropic(
             create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
             logger.info("Extended thinking enabled: budget=%d tokens (reasoning=%s)", thinking_budget, reasoning_effort)
 
-    log_file = (  # noqa: SIM115
-        open(stream_log_path, "w", encoding="utf-8") if stream_log_path else None  # pylint: disable=consider-using-with
+    log_file = (
+        open(stream_log_path, "w", encoding="utf-8") if stream_log_path else None  # noqa: SIM115
     )
 
     try:

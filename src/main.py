@@ -7,6 +7,8 @@ import os
 import sys
 import time
 
+from . import ApiConfig
+
 
 def _parse_args_with_explicit(parser: argparse.ArgumentParser) -> tuple[argparse.Namespace, set[str]]:
     """Parse CLI args and track which ones were explicitly provided by the user.
@@ -210,18 +212,24 @@ def main() -> None:
         else:
             args.model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-5.4")
 
+    api_cfg = ApiConfig(
+        api_key=args.api_key,
+        api_base_url=args.api_base_url,
+        model_name=args.model_name,
+    )
+
     # --- Replay mode ---
     if args.replay:
         from .replay import run_replay
 
-        run_replay(args.replay)
+        run_replay(args.replay, api_cfg=api_cfg)
         return
 
     # --- Continue mode ---
     if args.continue_run:
         from .continue_run import run_continue
 
-        run_continue(args.continue_run)
+        run_continue(args.continue_run, api_cfg=api_cfg)
         return
 
     # When --pages is specified, ignore --max-pages
@@ -250,7 +258,7 @@ def main() -> None:
         provider,
         args.dpi,
         "on" if args.enable_animations else "off",
-        args.model_name,
+        api_cfg.model_name,
         args.reasoning_effort,
     )
 
@@ -264,9 +272,9 @@ def main() -> None:
         dry_params: dict = {"pdf": os.path.abspath(args.pdf), "dry_run": True}
         _dry_map = {
             "api_provider": ("api_provider", provider),
-            "api_base_url": ("api_base_url", args.api_base_url),
-            "api_key": ("api_key", args.api_key),
-            "model_name": ("model_name", args.model_name),
+            "api_base_url": ("api_base_url", api_cfg.api_base_url),
+            "api_key": ("api_key", api_cfg.api_key),
+            "model_name": ("model_name", api_cfg.model_name),
             "dpi": ("dpi", args.dpi),
             "enable_animations": ("enable_animations", args.enable_animations),
             "reasoning_effort": ("reasoning_effort", args.reasoning_effort),
@@ -284,7 +292,7 @@ def main() -> None:
             pdf_path=args.pdf,
             dpi=args.dpi,
             enable_animations=args.enable_animations,
-            model_name=args.model_name,
+            model_name=api_cfg.model_name,
             max_pages=args.max_pages,
             batch_size=args.batch_size,
             prompt_lang=args.prompt_lang,
@@ -329,8 +337,8 @@ def main() -> None:
     _arg_map = {
         "output": ("output", os.path.abspath(args.output) if args.output else ""),
         "api_provider": ("api_provider", provider),
-        "api_base_url": ("api_base_url", args.api_base_url),
-        "model_name": ("model_name", args.model_name),
+        "api_base_url": ("api_base_url", api_cfg.api_base_url),
+        "model_name": ("model_name", api_cfg.model_name),
         "dpi": ("dpi", args.dpi),
         "enable_animations": ("enable_animations", args.enable_animations),
         "reasoning_effort": ("reasoning_effort", args.reasoning_effort),
@@ -348,10 +356,7 @@ def main() -> None:
     store.save_run_params(run_params)
 
     # Step 1: Load images (from PDF or folder)
-    if is_folder_input:
-        all_pages = images_from_folder(args.pdf)
-    else:
-        all_pages = pdf_to_images(args.pdf, dpi=args.dpi)
+    all_pages = images_from_folder(args.pdf) if is_folder_input else pdf_to_images(args.pdf, dpi=args.dpi)
     if page_indices is not None:
         pages = [p for p in all_pages if p[1]["page_num"] in page_indices]
     elif args.max_pages > 0:
@@ -396,8 +401,8 @@ def main() -> None:
                 "input_type": "folder" if is_folder_input else "pdf",
                 "output_pptx": os.path.abspath(args.output) if args.output else "",
                 "api_provider": provider,
-                "api_base_url": args.api_base_url,
-                "model": args.model_name,
+                "api_base_url": api_cfg.api_base_url,
+                "model": api_cfg.model_name,
                 "dpi": args.dpi,
                 "enable_animations": args.enable_animations,
                 "reasoning_effort": args.reasoning_effort,
@@ -452,7 +457,7 @@ def main() -> None:
             store.save_tools(tools_to_save)
 
         token_est = estimate_tokens(
-            messages, model=args.model_name, reasoning_effort=args.reasoning_effort, dpi=args.dpi,
+            messages, model=api_cfg.model_name, reasoning_effort=args.reasoning_effort, dpi=args.dpi,
             output_tps=args.output_tps,
         )
         batch_token_estimates.append(token_est)
@@ -476,7 +481,7 @@ def main() -> None:
         logger.info("Calling LLM API for %s (%s)", batch_label, provider)
 
         def _on_slide_ready(batch_local_num: int, xml_str: str) -> None:
-            actual = batch_page_map.get(batch_local_num, batch_local_num)
+            actual = batch_page_map.get(batch_local_num, batch_local_num)  # noqa: B023
             store.save_slide_xml(actual, xml_str)
 
         batch_xmls: dict[int, str] = {}
@@ -488,9 +493,7 @@ def main() -> None:
                     result = call_anthropic(
                         messages=messages,
                         system_prompt=sys_prompt_text,
-                        api_key=args.api_key,
-                        api_base_url=args.api_base_url,
-                        model_name=args.model_name,
+                        api_cfg=api_cfg,
                         stream_log_path=stream_log,
                         reasoning_effort=args.reasoning_effort,
                         estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
@@ -499,9 +502,7 @@ def main() -> None:
                 else:
                     result = call_llm(
                         messages=messages,
-                        api_base_url=args.api_base_url,
-                        api_key=args.api_key,
-                        model_name=args.model_name,
+                        api_cfg=api_cfg,
                         stream_log_path=stream_log,
                         reasoning_effort=args.reasoning_effort,
                         estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),

@@ -65,10 +65,7 @@ def run_dry(
         })
 
     # Step 1: Load images (from PDF or folder)
-    if is_folder:
-        all_pages = images_from_folder(pdf_path)
-    else:
-        all_pages = pdf_to_images(pdf_path, dpi=dpi)
+    all_pages = images_from_folder(pdf_path) if is_folder else pdf_to_images(pdf_path, dpi=dpi)
     if page_indices is not None:
         pages = [p for p in all_pages if p[1]["page_num"] in page_indices]
     elif max_pages > 0:

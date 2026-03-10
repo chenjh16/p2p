@@ -9,6 +9,7 @@ import shutil
 
 from pptx import Presentation
 
+from src import ApiConfig
 from tests.conftest import MOCK_BASE_URL, SAMPLE_SLIDE_XML
 
 
@@ -38,9 +39,7 @@ def test_error_recovery_retry(mock_server, sample_pdf, tmp_path, monkeypatch):
             raise ConnectionError("Simulated API failure")
         return call_llm(
             messages=kwargs["messages"],
-            api_base_url=MOCK_BASE_URL,
-            api_key="test-key",
-            model_name="mock-gpt-5.4",
+            api_cfg=ApiConfig(api_base_url=MOCK_BASE_URL, api_key="test-key", model_name="mock-gpt-5.4"),
             stream_log_path=kwargs.get("stream_log_path", ""),
             reasoning_effort="",
         )

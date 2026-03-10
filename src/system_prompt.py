@@ -27,6 +27,13 @@ You MUST convert ALL pages in a SINGLE response by making MULTIPLE PARALLEL tool
 
    **CRITICAL — Diagrams and flowcharts MUST be vectorized**: If a region contains a diagram, flowchart, architecture diagram, pipeline, or any illustration composed of basic geometric shapes (rectangles, circles, rounded rectangles, arrows, lines, etc.) combined with text labels and connectors, you MUST decompose it into individual PowerPoint vector elements — NOT treat it as a single raster placeholder. Use `<p:sp>` for shapes, `<p:cxnSp>` or line shapes for arrows/connectors, `<p:grpSp>` to group related elements, and separate text boxes for labels. Only use raster placeholders for regions that are truly photographic or contain complex artistic illustrations that cannot be built from basic shapes.
 
+   **Icons MUST be drawn as DrawingML vector shapes**: When a slide contains simple icons or pictograms (e.g., checkmarks, crosses, gears, light bulbs, user silhouettes, document icons, lock/shield icons, arrows, phone/email icons, cloud icons, magnifying glasses, etc.), you MUST draw them using DrawingML rather than treating them as raster placeholders. Approaches in order of preference:
+   - **Preset shapes** `<a:prstGeom>`: Use built-in shapes when a close match exists (e.g., `star5`, `heart`, `lightningBolt`, `gear6`, `actionButtonHome`, `cloud`, `sun`, `moon`, etc.)
+   - **Unicode/Emoji characters**: For common symbols (✓, ✗, ★, ☎, ✉, ⚙, 🔒, etc.), place them as text in a text box with appropriate font and size
+   - **Custom geometry** `<a:custGeom>`: For icons that don't match any preset shape, construct them from path commands (`moveTo`, `lnTo`, `cubicBezTo`, `close`) to approximate the icon's outline
+   - **Grouped simple shapes**: Combine multiple preset shapes (circles, rectangles, triangles, lines) to build the icon
+   Only fall back to a raster placeholder for icons that are highly detailed, photorealistic, or contain complex gradients/textures that cannot be reasonably approximated with vector paths.
+
 2. **Raster Placeholder — Last Resort Only**: Use raster placeholders ONLY for regions that are genuinely photographic images, screenshots, or complex artistic illustrations that cannot be decomposed into basic shapes. Create a text box at the exact position and size of the image region, and put the following text inside it:
    ```
    __LLMCLIP__:[x1, y1][x2, y2]
@@ -215,6 +222,13 @@ SYSTEM_PROMPT_ZH = r"""你是一个专业的演示文稿重建引擎。你的任
    - **组合** `<p:grpSp>`：将逻辑相关的元素组合在一起
 
    **关键——示意图和流程图必须矢量化**：如果某个区域包含由基本几何形状（矩形、圆形、圆角矩形、箭头、线条等）组合文本标签和连接线构成的示意图、流程图、架构图或管线图，你必须将其拆解为独立的 PowerPoint 矢量元素——而不是作为单个光栅图占位。使用 `<p:sp>` 表示形状，`<p:cxnSp>` 或线条形状表示箭头/连接线，`<p:grpSp>` 组合相关元素，单独的文本框表示标签。仅对真正的照片或无法用基本形状构建的复杂艺术插图使用光栅图占位。
+
+   **图标必须使用 DrawingML 矢量形状绘制**：当 slide 中包含简单图标或象形符号（如对勾、叉号、齿轮、灯泡、用户头像、文档图标、锁/盾牌图标、箭头、电话/邮件图标、云图标、放大镜等）时，你必须使用 DrawingML 绘制，而非作为光栅图占位。按优先级排序：
+   - **预设形状** `<a:prstGeom>`：当存在近似匹配时使用内置形状（如 `star5`、`heart`、`lightningBolt`、`gear6`、`actionButtonHome`、`cloud`、`sun`、`moon` 等）
+   - **Unicode/Emoji 字符**：常见符号（✓、✗、★、☎、✉、⚙、🔒 等）可作为文本放入文本框，使用适当的字体和大小
+   - **自定义几何** `<a:custGeom>`：对于不匹配任何预设形状的图标，使用路径命令（`moveTo`、`lnTo`、`cubicBezTo`、`close`）构建图标轮廓的近似路径
+   - **组合简单形状**：将多个预设形状（圆形、矩形、三角形、线条）组合构建图标
+   仅当图标高度精细、具有照片级真实感或包含无法用矢量路径合理近似的复杂渐变/纹理时，才退回使用光栅图占位。
 
 2. **光栅图占位——仅作为最后手段**：仅对真正的照片、截图或无法拆解为基本形状的复杂艺术插图使用光栅图占位。在图片区域的精确位置和大小处创建一个文本框，并在其中放入以下文本：
    ```

@@ -10,6 +10,7 @@ from collections.abc import Callable
 import httpx
 import openai
 
+from . import ApiConfig
 from .logging_config import get_logger
 from .system_prompt import WRITE_SLIDE_XML_TOOL
 
@@ -46,11 +47,12 @@ class LLMResult:
         self.reasoning_text = reasoning_text
 
 
+_DEFAULT_API_CFG = ApiConfig()
+
+
 def call_llm(
     messages: list[dict],
-    api_base_url: str = "",
-    api_key: str = "",
-    model_name: str = "gpt-5.4",
+    api_cfg: ApiConfig = _DEFAULT_API_CFG,
     max_tokens: int = 128000,
     stream_log_path: str = "",
     reasoning_effort: str = "medium",
@@ -70,10 +72,10 @@ def call_llm(
     timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout)
 
     client_kwargs: dict = {"timeout": timeout, "max_retries": 0}
-    if api_base_url:
-        client_kwargs["base_url"] = api_base_url
-    if api_key:
-        client_kwargs["api_key"] = api_key
+    if api_cfg.api_base_url:
+        client_kwargs["base_url"] = api_cfg.api_base_url
+    if api_cfg.api_key:
+        client_kwargs["api_key"] = api_cfg.api_key
     client = openai.OpenAI(**client_kwargs)
 
     logger.info(
@@ -87,14 +89,14 @@ def call_llm(
 
     logger.info(
         "Calling %s API (streaming, tool_calling, parallel, reasoning=%s, max_tokens=%d)...",
-        model_name,
+        api_cfg.model_name,
         reasoning_effort,
         max_tokens,
     )
     t0 = time.time()
 
     create_kwargs: dict = {
-        "model": model_name,
+        "model": api_cfg.model_name,
         "messages": messages,
         "tools": tools,
         "tool_choice": "required",

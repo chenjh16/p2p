@@ -7,18 +7,30 @@ import os
 import sys
 import time
 
+from . import ApiConfig
 from .logging_config import get_logger
 
 logger = get_logger("replay")
 
 
-def run_replay(source_dir: str) -> None:
+_DEFAULT_API_CFG = ApiConfig()
+
+
+def run_replay(
+    source_dir: str,
+    *,
+    api_cfg: ApiConfig = _DEFAULT_API_CFG,
+) -> None:
     """Re-execute a previous run/dry-run using its saved run_params.json.
 
     Reads the parameters from ``source_dir/run_params.json``, resolves the
     input PDF (from the copy inside the artifact directory if the original is
     missing), and runs the full conversion or dry-run pipeline.  All new
     artifacts are saved under ``runs/replay-<name>-<timestamp>/``.
+
+    ``api_cfg`` is resolved by the caller (``main.py``) from CLI args and
+    environment variables.  Values from ``run_params.json`` are used as
+    fallbacks for any empty fields.
     """
     import contextlib
 
@@ -56,7 +68,11 @@ def run_replay(source_dir: str) -> None:
     provider = params.get("api_provider", "openai")
     dpi = params.get("dpi", 192)
     enable_animations = params.get("enable_animations", False)
-    model_name = params.get("model_name", "gpt-5.4")
+    resolved_cfg = ApiConfig(
+        api_key=api_cfg.api_key or params.get("api_key", ""),
+        api_base_url=api_cfg.api_base_url or params.get("api_base_url", ""),
+        model_name=api_cfg.model_name or params.get("model_name", "gpt-5.4"),
+    )
     reasoning_effort = params.get("reasoning_effort", "medium")
     prompt_lang = params.get("prompt_lang", "en")
     batch_size = params.get("batch_size", 0)
@@ -71,7 +87,7 @@ def run_replay(source_dir: str) -> None:
             pdf_path=pdf_path,
             dpi=dpi,
             enable_animations=enable_animations,
-            model_name=model_name,
+            model_name=resolved_cfg.model_name,
             max_pages=max_pages,
             batch_size=batch_size,
             prompt_lang=prompt_lang,
@@ -92,7 +108,9 @@ def run_replay(source_dir: str) -> None:
 
     if batch_size <= 0:
         batch_size = recommend_batch_size(reasoning_effort=reasoning_effort)
-        logger.info("Auto batch size: %d pages (gateway timeout 600s, reasoning=%s)", batch_size, reasoning_effort)
+        logger.info(
+            "Auto batch size: %d pages (gateway timeout 600s, reasoning=%s)", batch_size, reasoning_effort,
+        )
 
     store.save_run_params({
         **params,
@@ -153,7 +171,7 @@ def run_replay(source_dir: str) -> None:
             tools_to_save = [WRITE_SLIDE_XML_TOOL_ANTHROPIC] if provider == "anthropic" else [WRITE_SLIDE_XML_TOOL]
             store.save_tools(tools_to_save)
 
-        token_est = estimate_tokens(messages, model=model_name, reasoning_effort=reasoning_effort, dpi=dpi)
+        token_est = estimate_tokens(messages, model=resolved_cfg.model_name, reasoning_effort=reasoning_effort, dpi=dpi)
         batch_token_estimates.append(token_est)
         total_input_tokens += token_est["total_input_tokens"]
         total_output_tokens_est += token_est["estimated_output_tokens"]
@@ -173,7 +191,7 @@ def run_replay(source_dir: str) -> None:
         t_api_start = time.time()
 
         def _on_slide_ready(batch_local_num: int, xml_str: str) -> None:
-            actual = batch_page_map.get(batch_local_num, batch_local_num)
+            actual = batch_page_map.get(batch_local_num, batch_local_num)  # noqa: B023
             store.save_slide_xml(actual, xml_str)
 
         if provider == "anthropic":
@@ -181,9 +199,7 @@ def run_replay(source_dir: str) -> None:
             result = call_anthropic(
                 messages=messages,
                 system_prompt=sys_prompt_text,
-                api_key=params.get("api_key", os.getenv("ANTHROPIC_API_KEY", "")),
-                api_base_url=params.get("api_base_url", os.getenv("ANTHROPIC_BASE_URL", "")),
-                model_name=model_name,
+                api_cfg=resolved_cfg,
                 stream_log_path=stream_log,
                 reasoning_effort=reasoning_effort,
                 estimated_response_seconds=float(est_time),
@@ -192,9 +208,7 @@ def run_replay(source_dir: str) -> None:
         else:
             result = call_llm(
                 messages=messages,
-                api_base_url=params.get("api_base_url", os.getenv("OPENAI_BASE_URL", "")),
-                api_key=params.get("api_key", os.getenv("OPENAI_API_KEY", "")),
-                model_name=model_name,
+                api_cfg=resolved_cfg,
                 stream_log_path=stream_log,
                 reasoning_effort=reasoning_effort,
                 estimated_response_seconds=float(est_time),
@@ -266,7 +280,7 @@ def run_replay(source_dir: str) -> None:
             "pdf_path": os.path.abspath(pdf_path),
             "output_pptx": os.path.abspath(output_name),
             "api_provider": provider,
-            "model": model_name,
+            "model": resolved_cfg.model_name,
             "dpi": dpi,
             "enable_animations": enable_animations,
             "reasoning_effort": reasoning_effort,

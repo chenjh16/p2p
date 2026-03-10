@@ -8,6 +8,7 @@ import shutil
 
 from pptx import Presentation
 
+from src import ApiConfig
 from tests.conftest import MOCK_ANTHROPIC_URL, MOCK_BASE_URL
 
 
@@ -75,9 +76,7 @@ def test_e2e_conversion(mock_server, sample_pdf, tmp_path):
     stream_log = os.path.join(store.root, "stream.log")
     result = call_llm(
         messages=messages,
-        api_base_url=MOCK_BASE_URL,
-        api_key="test-key",
-        model_name="mock-gpt-5.4",
+        api_cfg=ApiConfig(api_base_url=MOCK_BASE_URL, api_key="test-key", model_name="mock-gpt-5.4"),
         stream_log_path=stream_log,
         reasoning_effort="",
     )
@@ -147,9 +146,7 @@ def test_e2e_anthropic_conversion(mock_anthropic_server, sample_pdf, tmp_path):
     result = call_anthropic(
         messages=messages,
         system_prompt=sys_prompt,
-        api_key="test-key",
-        api_base_url=MOCK_ANTHROPIC_URL,
-        model_name="mock-claude",
+        api_cfg=ApiConfig(api_key="test-key", api_base_url=MOCK_ANTHROPIC_URL, model_name="mock-claude"),
         stream_log_path=stream_log,
         reasoning_effort="",
     )
@@ -292,9 +289,7 @@ def test_multi_batch_conversion(mock_server, tmp_path):
         stream_log = os.path.join(store.root, f"stream_batch{batch_idx}.log")
         result = call_llm(
             messages=messages,
-            api_base_url=MOCK_BASE_URL,
-            api_key="test-key",
-            model_name="mock-gpt-5.4",
+            api_cfg=ApiConfig(api_base_url=MOCK_BASE_URL, api_key="test-key", model_name="mock-gpt-5.4"),
             stream_log_path=stream_log,
             reasoning_effort="",
             on_slide_ready=lambda pn, xml, m=batch_page_map: store.save_slide_xml(m.get(pn, pn), xml),
@@ -388,9 +383,7 @@ def test_folder_input_conversion(mock_server, tmp_path):
 
     result = call_llm(
         messages=messages,
-        api_base_url=MOCK_BASE_URL,
-        api_key="test-key",
-        model_name="gpt-5.4",
+        api_cfg=ApiConfig(api_base_url=MOCK_BASE_URL, api_key="test-key", model_name="gpt-5.4"),
         max_tokens=4096,
         reasoning_effort="",
     )

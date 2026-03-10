@@ -6,17 +6,28 @@ import json
 import os
 import sys
 
+from . import ApiConfig
 from .logging_config import get_logger
 
 logger = get_logger("continue")
 
 
-def run_continue(source_dir: str) -> None:
+_DEFAULT_API_CFG = ApiConfig()
+
+
+def run_continue(
+    source_dir: str,
+    *,
+    api_cfg: ApiConfig = _DEFAULT_API_CFG,
+) -> None:
     """Analyze a previous run directory and resume or post-process.
 
     Reads ``slides/`` to determine which pages have already been generated,
     then offers the user a choice: continue generating remaining pages, or
     proceed directly to PPTX assembly with whatever slides are available.
+
+    ``api_cfg`` is resolved by the caller (``main.py``) from CLI args and
+    environment variables.
     """
     metadata_path = os.path.join(source_dir, "metadata.json")
     slides_dir = os.path.join(source_dir, "slides")
@@ -70,7 +81,10 @@ def run_continue(source_dir: str) -> None:
         if choice.startswith("q"):
             return
         if choice.startswith("c"):
-            _continue_generation(source_dir, meta, existing_xmls, missing_pages)
+            _continue_generation(
+                source_dir, meta, existing_xmls, missing_pages,
+                api_cfg=api_cfg,
+            )
             return
     else:
         logger.error("No slides found and no metadata. Cannot continue.")
@@ -85,6 +99,8 @@ def _continue_generation(
     meta: dict,
     existing_xmls: dict[int, str],
     missing_pages: list[int],
+    *,
+    api_cfg: ApiConfig = _DEFAULT_API_CFG,
 ) -> None:
     """Generate missing slides and then assemble the PPTX."""
 
@@ -103,7 +119,11 @@ def _continue_generation(
             sys.exit(1)
 
     provider = runtime.get("api_provider", "openai")
-    model_name = runtime.get("model", "gpt-5.4")
+    resolved_cfg = ApiConfig(
+        api_key=api_cfg.api_key,
+        api_base_url=api_cfg.api_base_url,
+        model_name=api_cfg.model_name or runtime.get("model", "gpt-5.4"),
+    )
     dpi = runtime.get("dpi", 192)
     enable_animations = runtime.get("enable_animations", False)
     reasoning_effort = runtime.get("reasoning_effort", "medium")
@@ -123,7 +143,9 @@ def _continue_generation(
         sys.exit(1)
 
     batch_size = recommend_batch_size(reasoning_effort=reasoning_effort, output_tps=output_tps)
-    logger.info("Generating %d missing pages in batches of %d", len(missing_page_data), batch_size)
+    logger.info(
+        "Generating %d missing pages in batches of %d", len(missing_page_data), batch_size,
+    )
 
     slide_xmls = dict(existing_xmls)
 
@@ -143,7 +165,7 @@ def _continue_generation(
             prompt_lang=prompt_lang, provider=provider,
         )
         token_est = estimate_tokens(
-            messages, model=model_name, reasoning_effort=reasoning_effort,
+            messages, model=resolved_cfg.model_name, reasoning_effort=reasoning_effort,
             dpi=dpi, output_tps=output_tps,
         )
 
@@ -151,7 +173,7 @@ def _continue_generation(
         logger.info("Calling LLM API for %s (%s)", batch_label, provider)
 
         def _save_slide(batch_local_num: int, xml_str: str) -> None:
-            actual = batch_page_map.get(batch_local_num, batch_local_num)
+            actual = batch_page_map.get(batch_local_num, batch_local_num)  # noqa: B023
             path = os.path.join(cont_slides_dir, f"slide_{actual:03d}.xml")
             with open(path, "w", encoding="utf-8") as f:
                 f.write(xml_str)
@@ -162,9 +184,7 @@ def _continue_generation(
                 result = call_anthropic(
                     messages=messages,
                     system_prompt=sys_prompt_text,
-                    api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-                    api_base_url=os.getenv("ANTHROPIC_BASE_URL", ""),
-                    model_name=model_name,
+                    api_cfg=resolved_cfg,
                     stream_log_path=stream_log,
                     reasoning_effort=reasoning_effort,
                     estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
@@ -173,9 +193,7 @@ def _continue_generation(
             else:
                 result = call_llm(
                     messages=messages,
-                    api_base_url=os.getenv("OPENAI_BASE_URL", ""),
-                    api_key=os.getenv("OPENAI_API_KEY", ""),
-                    model_name=model_name,
+                    api_cfg=resolved_cfg,
                     stream_log_path=stream_log,
                     reasoning_effort=reasoning_effort,
                     estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
