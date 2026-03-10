@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 from datetime import datetime
+from typing import Any
 
 from .logging_config import get_logger
 
@@ -56,7 +57,7 @@ class ArtifactStore:
         width = len(str(self._n_batches - 1)) if self._n_batches > 1 else 1
         return f"_{batch_idx:0{width}d}"
 
-    def save_page_images(self, pages: list[tuple[bytes, dict]]) -> None:
+    def save_page_images(self, pages: list[tuple[bytes, dict[str, Any]]]) -> None:
         """Write each page image to a PNG file in the pages directory."""
         for img_bytes, meta in pages:
             page_num = meta["page_num"]
@@ -66,7 +67,7 @@ class ArtifactStore:
         logger.info("Saved %d page images", len(pages))
 
     def save_messages(
-        self, messages: list[dict], pages_dir: str | None = None, batch_idx: int = 0,
+        self, messages: list[dict[str, Any]], pages_dir: str | None = None, batch_idx: int = 0,
     ) -> None:
         """Save messages to JSON (light variant with paths, full with base64).
 
@@ -90,18 +91,18 @@ class ArtifactStore:
         with open(os.path.join(self.root, "system_prompt.md"), "w", encoding="utf-8") as f:
             f.write(prompt)
 
-    def save_tools(self, tools: list[dict]) -> None:
+    def save_tools(self, tools: list[dict[str, Any]]) -> None:
         """Write tool definitions to JSON."""
         with open(os.path.join(self.root, "tools.json"), "w", encoding="utf-8") as f:
             json.dump(tools, f, indent=2)
 
-    def save_token_estimate(self, token_est: dict) -> None:
+    def save_token_estimate(self, token_est: dict[str, Any]) -> None:
         """Write token estimate and cost info to JSON."""
         with open(os.path.join(self.root, "token_estimate.json"), "w", encoding="utf-8") as f:
             json.dump(token_est, f, indent=2)
         logger.info("Saved token estimate")
 
-    def save_api_response(self, response_data: dict, batch_idx: int = 0) -> None:
+    def save_api_response(self, response_data: dict[str, Any], batch_idx: int = 0) -> None:
         """Write API response metadata to JSON."""
         suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"api_response{suffix}.json")
@@ -109,7 +110,7 @@ class ArtifactStore:
             json.dump(response_data, f, ensure_ascii=False, indent=2)
         logger.info("Saved API response → %s", os.path.basename(path))
 
-    def save_stream_chunks(self, chunks: list[dict], batch_idx: int = 0) -> None:
+    def save_stream_chunks(self, chunks: list[dict[str, Any]], batch_idx: int = 0) -> None:
         """Write raw stream chunks to JSONL."""
         suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"stream_chunks{suffix}.jsonl")
@@ -118,7 +119,7 @@ class ArtifactStore:
                 f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
         logger.info("Saved %d stream chunks → %s", len(chunks), os.path.basename(path))
 
-    def save_tool_calls(self, tool_calls: list[dict], batch_idx: int = 0) -> None:
+    def save_tool_calls(self, tool_calls: list[dict[str, Any]], batch_idx: int = 0) -> None:
         """Write tool call payloads to JSON."""
         suffix = self.batch_suffix(batch_idx)
         path = os.path.join(self.root, f"tool_calls{suffix}.json")
@@ -139,12 +140,12 @@ class ArtifactStore:
             self.save_slide_xml(page_num, xml_str)
         logger.info("Saved %d slide XMLs", len(slide_xmls))
 
-    def save_metadata(self, metadata: dict) -> None:
+    def save_metadata(self, metadata: dict[str, Any]) -> None:
         """Write run metadata (paths, counts, timing) to JSON."""
         with open(os.path.join(self.root, "metadata.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-    def save_run_params(self, params: dict) -> None:
+    def save_run_params(self, params: dict[str, Any]) -> None:
         """Write the CLI / execution parameters used for this run."""
         with open(os.path.join(self.root, "run_params.json"), "w", encoding="utf-8") as f:
             json.dump(params, f, ensure_ascii=False, indent=2)
@@ -185,7 +186,7 @@ class ArtifactStore:
         logger.info("Copied output PPTX → %s", os.path.basename(dest))
 
 
-def _strip_base64(messages: list[dict], pages_dir: str) -> list[dict]:
+def _strip_base64(messages: list[dict[str, Any]], pages_dir: str) -> list[dict[str, Any]]:
     """Create a copy of messages with base64 images replaced by file paths.
 
     Handles both OpenAI format (type: "image_url") and Anthropic format (type: "image").

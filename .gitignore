@@ -24,6 +24,7 @@ runs/
 
 .env
 .env.local
+.p2p.config
 
 .DS_Store
 Thumbs.db

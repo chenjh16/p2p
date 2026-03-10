@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 from datetime import UTC, datetime
+from typing import Any
 
 from .artifacts import ArtifactStore
 from .logging_config import get_logger
@@ -27,7 +28,7 @@ def run_dry(
     reasoning_effort: str = "medium",
     provider: str = "openai",
     page_indices: list[int] | None = None,
-    run_params: dict | None = None,
+    run_params: dict[str, Any] | None = None,
     output_tps: float = 0,
 ) -> str:
     """Execute dry-run: prepare everything before the API call and export artifacts.

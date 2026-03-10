@@ -6,6 +6,7 @@ import json
 import sys
 import time
 from collections.abc import Callable
+from typing import IO, Any
 
 import httpx
 import openai
@@ -23,12 +24,12 @@ class LLMResult:
     def __init__(
         self,
         slide_xmls: dict[int, str],
-        response_data: dict,
-        raw_chunks: list[dict],
-        tool_calls_raw: list[dict],
+        response_data: dict[str, Any],
+        raw_chunks: list[dict[str, Any]],
+        tool_calls_raw: list[dict[str, Any]],
         content_text: str,
         reasoning_text: str,
-    ):
+    ) -> None:
         """Initialise with all outputs from a streaming LLM API call.
 
         Args:
@@ -51,7 +52,7 @@ _DEFAULT_API_CFG = ApiConfig()
 
 
 def call_llm(
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     api_cfg: ApiConfig = _DEFAULT_API_CFG,
     max_tokens: int = 128000,
     stream_log_path: str = "",
@@ -71,11 +72,14 @@ def call_llm(
     connect_timeout = 30.0
     timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout)
 
-    client_kwargs: dict = {"timeout": timeout, "max_retries": 0}
+    client_kwargs: dict[str, Any] = {"timeout": timeout, "max_retries": 0}
     if api_cfg.api_base_url:
         client_kwargs["base_url"] = api_cfg.api_base_url
     if api_cfg.api_key:
         client_kwargs["api_key"] = api_cfg.api_key
+    if api_cfg.extra_headers:
+        client_kwargs["default_headers"] = api_cfg.extra_headers
+
     client = openai.OpenAI(**client_kwargs)
 
     logger.info(
@@ -95,7 +99,7 @@ def call_llm(
     )
     t0 = time.time()
 
-    create_kwargs: dict = {
+    create_kwargs: dict[str, Any] = {
         "model": api_cfg.model_name,
         "messages": messages,
         "tools": tools,
@@ -110,7 +114,7 @@ def call_llm(
     else:
         create_kwargs["max_tokens"] = max_tokens
 
-    stream = client.chat.completions.create(**create_kwargs)  # type: ignore[call-overload]
+    stream = client.chat.completions.create(**create_kwargs)
 
     log_file = open(stream_log_path, "w", encoding="utf-8") if stream_log_path else None  # noqa: SIM115
 
@@ -172,7 +176,7 @@ def call_llm(
 
 
 def _flush_tool_call(
-    tc: dict,
+    tc: dict[str, Any],
     idx: int,
     slide_xmls: dict[int, str],
     on_slide_ready: Callable[[int, str], None] | None,
@@ -196,19 +200,19 @@ def _flush_tool_call(
 
 
 def _consume_stream(
-    stream,  # type: ignore[type-arg]
-    log_file,  # type: ignore[type-arg]
+    stream: Any,
+    log_file: IO[str] | None,
     *,
     on_slide_ready: Callable[[int, str], None] | None = None,
-) -> tuple[dict[int, str], dict, list[dict], list[dict], str, str]:
+) -> tuple[dict[int, str], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], str, str]:
     """Consume the streaming response, printing to stderr and accumulating tool calls."""
-    tool_calls_acc: dict[int, dict] = {}
+    tool_calls_acc: dict[int, dict[str, Any]] = {}
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     finish_reason: str | None = None
     model: str = ""
-    usage_data: dict | None = None
-    raw_chunks: list[dict] = []
+    usage_data: dict[str, Any] | None = None
+    raw_chunks: list[dict[str, Any]] = []
     chunk_count = 0
     current_tc_idx: int | None = None
     slide_xmls: dict[int, str] = {}
@@ -292,7 +296,7 @@ def _consume_stream(
     content_text = "".join(content_parts)
     reasoning_text = "".join(reasoning_parts)
 
-    tool_calls_raw: list[dict] = []
+    tool_calls_raw: list[dict[str, Any]] = []
     for idx in sorted(tool_calls_acc.keys()):
         tc = tool_calls_acc[idx]
         tool_calls_raw.append({
@@ -303,7 +307,7 @@ def _consume_stream(
         })
 
     slide_sizes = {str(p): len(x) for p, x in sorted(slide_xmls.items())}
-    response_data: dict = {
+    response_data: dict[str, Any] = {
         "model": model,
         "finish_reason": finish_reason,
         "usage": usage_data,

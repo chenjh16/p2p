@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import Any
 
 from . import ApiConfig
 from .logging_config import get_logger
@@ -47,7 +48,7 @@ def run_continue(
                     existing_xmls[page_num] = f.read()
 
     # Load metadata to understand the run parameters
-    meta: dict = {}
+    meta: dict[str, Any] = {}
     if os.path.isfile(metadata_path):
         with open(metadata_path, encoding="utf-8") as f:
             meta = json.load(f)
@@ -96,7 +97,7 @@ def run_continue(
 
 def _continue_generation(
     source_dir: str,
-    meta: dict,
+    meta: dict[str, Any],
     existing_xmls: dict[int, str],
     missing_pages: list[int],
     *,
@@ -132,6 +133,8 @@ def _continue_generation(
 
     if provider == "anthropic":
         from .api_client_anthropic import call_anthropic
+    elif resolved_cfg.use_responses_api:
+        from .api.openai_responses_client import call_llm_responses
     else:
         from .api_client import call_llm
 
@@ -190,6 +193,15 @@ def _continue_generation(
                     estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
                     on_slide_ready=_save_slide,
                 )
+            elif resolved_cfg.use_responses_api:
+                result = call_llm_responses(
+                    messages=messages,
+                    api_cfg=resolved_cfg,
+                    stream_log_path=stream_log,
+                    reasoning_effort=reasoning_effort,
+                    estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+                    on_slide_ready=_save_slide,
+                )
             else:
                 result = call_llm(
                     messages=messages,
@@ -220,7 +232,7 @@ def _continue_generation(
     _assemble_pptx(source_dir, meta, slide_xmls)
 
 
-def _assemble_pptx(source_dir: str, meta: dict, slide_xmls: dict[int, str]) -> None:
+def _assemble_pptx(source_dir: str, meta: dict[str, Any], slide_xmls: dict[int, str]) -> None:
     """Assemble PPTX from collected slide XMLs."""
     import contextlib
 

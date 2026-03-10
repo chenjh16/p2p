@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 from .logging_config import get_logger
 from .system_prompt import get_animation_section, get_system_prompt
@@ -33,11 +34,11 @@ def _build_task_text(n: int, slide_w: float, slide_h: float) -> str:
 
 
 def build_messages(
-    pages: list[tuple[bytes, dict]],
+    pages: list[tuple[bytes, dict[str, Any]]],
     enable_animations: bool = False,
     prompt_lang: str = "en",
     provider: str = "openai",
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Build the LLM messages array for a single API call.
 
     For OpenAI: returns messages with system role and image_url content blocks.
@@ -57,10 +58,10 @@ def get_system_prompt_text(enable_animations: bool = False, prompt_lang: str = "
 
 
 def _build_messages_openai(
-    pages: list[tuple[bytes, dict]],
+    pages: list[tuple[bytes, dict[str, Any]]],
     enable_animations: bool,
     prompt_lang: str,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Build OpenAI Chat Completions messages with image_url content blocks.
 
     Page labels use batch-local indices (0 to N-1) so the LLM returns
@@ -68,11 +69,11 @@ def _build_messages_openai(
     """
     system_prompt = get_system_prompt_text(enable_animations, prompt_lang)
 
-    messages: list[dict] = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
     ]
 
-    user_content: list[dict] = []
+    user_content: list[dict[str, Any]] = []
     n = len(pages)
     slide_w = pages[0][1]["width_pt"]
     slide_h = pages[0][1]["height_pt"]
@@ -98,17 +99,17 @@ def _build_messages_openai(
 
 
 def _build_messages_anthropic(
-    pages: list[tuple[bytes, dict]],
+    pages: list[tuple[bytes, dict[str, Any]]],
     enable_animations: bool,  # noqa: ARG001 — used via get_system_prompt_text in caller
     prompt_lang: str,  # noqa: ARG001
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Build Anthropic Messages API content blocks with base64 image sources.
 
     Note: system prompt is passed separately to the Anthropic API, not in messages.
     Page labels use batch-local indices (0 to N-1) so the LLM returns
     page_num values that match the batch_page_map in the caller.
     """
-    user_content: list[dict] = []
+    user_content: list[dict[str, Any]] = []
     n = len(pages)
     slide_w = pages[0][1]["width_pt"]
     slide_h = pages[0][1]["height_pt"]
@@ -128,7 +129,7 @@ def _build_messages_anthropic(
 
     user_content.append({"type": "text", "text": _build_task_text(n, slide_w, slide_h)})
 
-    messages: list[dict] = [{"role": "user", "content": user_content}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
 
     logger.info("Messages assembled (Anthropic): %d content parts (%d images)", len(user_content), len(pages))
     return messages

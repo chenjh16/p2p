@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,3 +12,5 @@ class ApiConfig:
     api_key: str = ""
     api_base_url: str = ""
     model_name: str = ""
+    use_responses_api: bool = False
+    extra_headers: dict[str, str] = field(default_factory=dict)

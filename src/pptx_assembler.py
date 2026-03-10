@@ -6,8 +6,10 @@ import copy
 import re
 
 from lxml import etree
+from lxml.etree import _Element
 from pptx import Presentation
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.slide import Slide
 from pptx.util import Pt
 
 from .logging_config import get_logger
@@ -94,7 +96,7 @@ class PPTXAssembler:
         logger.info("PPTX saved: %s", output_path)
 
 
-def _register_relationships(slide, sld_element: etree._Element) -> int:  # type: ignore[name-defined]
+def _register_relationships(slide: Slide, sld_element: _Element) -> int:
     """Scan the slide XML for r:link/r:embed references and register them as relationships.
 
     Returns the number of relationships registered.
@@ -127,7 +129,7 @@ def _register_relationships(slide, sld_element: etree._Element) -> int:  # type:
     return count
 
 
-def _extract_url_from_context(elem: etree._Element, rid: str) -> str:  # type: ignore[name-defined]  # pylint: disable=unused-argument
+def _extract_url_from_context(elem: _Element, rid: str) -> str:  # pylint: disable=unused-argument
     """Try to extract a URL from an element's context (e.g. hlinkClick with an action URL)."""
     action = elem.get("action", "")
     if action.startswith("ppaction://hlinksldjump"):

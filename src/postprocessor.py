@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import re
 from io import BytesIO
+from typing import TYPE_CHECKING
 
 import fitz  # PyMuPDF
 from pptx import Presentation
 
 from .logging_config import get_logger
+
+if TYPE_CHECKING:
+    from pptx.shapes.base import BaseShape
 
 logger = get_logger("postprocessor")
 
@@ -54,7 +58,7 @@ def postprocess_raster_fills(
             continue
 
         page = doc[pdf_page_num]
-        shapes_to_replace: list[tuple] = []
+        shapes_to_replace: list[tuple[BaseShape, bytes]] = []
 
         for shape in slide.shapes:
             if not shape.has_text_frame:
@@ -85,7 +89,11 @@ def postprocess_raster_fills(
             )
 
             sp = shape._element
-            sp.getparent().remove(sp)
+            parent = sp.getparent()
+            if parent is not None:
+                parent.remove(sp)
+            else:
+                logger.warning("Shape has no parent, skipping remove")
             fill_count += 1
 
         if shapes_to_replace:

@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 import time
+from typing import Any
 
 from . import ApiConfig
 
@@ -181,6 +182,12 @@ def main() -> None:
         help="Auto-confirm API calls without TUI prompt",
     )
     parser.add_argument(
+        "--use-responses-api",
+        action="store_true",
+        default=False,
+        help="Use OpenAI Responses API instead of Chat Completions (auto-enabled for IKunCode)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -218,10 +225,19 @@ def main() -> None:
         else:
             args.model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-5.4")
 
+    from .provider_config import load_provider_config
+
+    pcfg = load_provider_config(args.api_base_url, args.api_key)
+    use_responses = getattr(args, "use_responses_api", False) or (
+        pcfg.get("use_responses_api", False) and provider != "anthropic"
+    )
+
     api_cfg = ApiConfig(
         api_key=args.api_key,
         api_base_url=args.api_base_url,
         model_name=args.model_name,
+        use_responses_api=use_responses,
+        extra_headers=pcfg.get("extra_headers", {}),
     )
 
     # --- Replay mode ---
@@ -275,7 +291,7 @@ def main() -> None:
         from .dry_run import run_dry
 
         page_indices = _parse_page_spec(args.pages) if args.pages else None
-        dry_params: dict = {"pdf": os.path.abspath(args.pdf), "dry_run": True}
+        dry_params: dict[str, Any] = {"pdf": os.path.abspath(args.pdf), "dry_run": True}
         _dry_map = {
             "api_provider": ("api_provider", provider),
             "api_base_url": ("api_base_url", api_cfg.api_base_url),
@@ -321,8 +337,13 @@ def main() -> None:
     from .system_prompt import WRITE_SLIDE_XML_TOOL, WRITE_SLIDE_XML_TOOL_ANTHROPIC
     from .token_estimator import ASSUMED_OUTPUT_TPS, estimate_tokens, recommend_batch_size
 
+    if api_cfg.use_responses_api:
+        logger.info("Using OpenAI Responses API (auto-detected for %s)", api_cfg.api_base_url or "explicit flag")
+
     if provider == "anthropic":
         from .api_client_anthropic import call_anthropic
+    elif api_cfg.use_responses_api:
+        from .api.openai_responses_client import call_llm_responses
     else:
         from .api_client import call_llm
 
@@ -339,7 +360,7 @@ def main() -> None:
 
     page_indices = _parse_page_spec(args.pages) if args.pages else None
 
-    run_params: dict = {"pdf": os.path.abspath(args.pdf)}
+    run_params: dict[str, Any] = {"pdf": os.path.abspath(args.pdf)}
     _arg_map = {
         "output": ("output", os.path.abspath(args.output) if args.output else ""),
         "api_provider": ("api_provider", provider),
@@ -398,7 +419,7 @@ def main() -> None:
     total_input_tokens = 0
     total_output_tokens_est = 0
     total_est_response_seconds = 0.0
-    batch_token_estimates: list[dict] = []
+    batch_token_estimates: list[dict[str, Any]] = []
 
     def _save_metadata(*, success: bool) -> None:
         store.save_metadata({
@@ -521,6 +542,15 @@ def main() -> None:
                     result = call_anthropic(
                         messages=messages,
                         system_prompt=sys_prompt_text,
+                        api_cfg=api_cfg,
+                        stream_log_path=stream_log,
+                        reasoning_effort=args.reasoning_effort,
+                        estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+                        on_slide_ready=_on_slide_ready,
+                    )
+                elif api_cfg.use_responses_api:
+                    result = call_llm_responses(
+                        messages=messages,
                         api_cfg=api_cfg,
                         stream_log_path=stream_log,
                         reasoning_effort=args.reasoning_effort,

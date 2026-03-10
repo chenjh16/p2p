@@ -1,0 +1,10 @@
+{
+  "providers": [
+    {
+      "url_prefix": "https://api.example.com/v1",
+      "use_responses_api": true,
+      "headers": { "X-Custom-Header": "value" },
+      "headers_from_key": ["Authorization"]
+    }
+  ]
+}

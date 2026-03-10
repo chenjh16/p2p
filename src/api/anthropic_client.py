@@ -6,6 +6,7 @@ import json
 import sys
 import time
 from collections.abc import Callable
+from typing import IO, Any
 
 import anthropic
 import httpx
@@ -22,7 +23,7 @@ _DEFAULT_API_CFG = ApiConfig()
 
 
 def call_anthropic(
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     system_prompt: str,
     api_cfg: ApiConfig = _DEFAULT_API_CFG,
     max_tokens: int = 128000,
@@ -42,11 +43,14 @@ def call_anthropic(
     connect_timeout = 30.0
     timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout)
 
-    client_kwargs: dict = {"timeout": timeout, "max_retries": 0}
+    client_kwargs: dict[str, Any] = {"timeout": timeout, "max_retries": 0}
     if api_cfg.api_key:
         client_kwargs["api_key"] = api_cfg.api_key
     if api_cfg.api_base_url:
         client_kwargs["base_url"] = api_cfg.api_base_url
+    if api_cfg.extra_headers:
+        client_kwargs["default_headers"] = api_cfg.extra_headers
+
     client = anthropic.Anthropic(**client_kwargs)
 
     tools = [WRITE_SLIDE_XML_TOOL_ANTHROPIC]
@@ -64,7 +68,7 @@ def call_anthropic(
     )
     t0 = time.time()
 
-    create_kwargs: dict = {
+    create_kwargs: dict[str, Any] = {
         "model": api_cfg.model_name,
         "system": system_prompt,
         "messages": messages,
@@ -174,7 +178,7 @@ def _thinking_budget(reasoning_effort: str, max_tokens: int) -> int:
 
 
 def _flush_tool_block(
-    tb: dict,
+    tb: dict[str, Any],
     idx: int,
     slide_xmls: dict[int, str],
     on_slide_ready: Callable[[int, str], None] | None,
@@ -199,21 +203,21 @@ def _flush_tool_block(
 
 def _stream_response(
     client: anthropic.Anthropic,
-    create_kwargs: dict,
-    log_file,  # type: ignore[type-arg]
+    create_kwargs: dict[str, Any],
+    log_file: IO[str] | None,
     *,
     on_slide_ready: Callable[[int, str], None] | None = None,
-) -> tuple[dict[int, str], dict, list[dict], list[dict], str, str]:
+) -> tuple[dict[int, str], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], str, str]:
     """Stream the Anthropic response, printing to stderr and accumulating tool_use blocks."""
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
-    tool_blocks: dict[int, dict] = {}
-    raw_events: list[dict] = []
+    tool_blocks: dict[int, dict[str, Any]] = {}
+    raw_events: list[dict[str, Any]] = []
     current_block_idx: int = -1
     current_block_type: str = ""
     stop_reason: str | None = None
     model: str = ""
-    usage_data: dict = {}
+    usage_data: dict[str, Any] = {}
     slide_xmls: dict[int, str] = {}
 
     def _write(text: str) -> None:
@@ -292,7 +296,7 @@ def _stream_response(
     content_text = "".join(content_parts)
     reasoning_text = "".join(reasoning_parts)
 
-    tool_calls_raw: list[dict] = []
+    tool_calls_raw: list[dict[str, Any]] = []
     for idx in sorted(tool_blocks.keys()):
         tb = tool_blocks[idx]
         tool_calls_raw.append({
@@ -305,7 +309,7 @@ def _stream_response(
             _flush_tool_block(tb, idx, slide_xmls, on_slide_ready)
 
     slide_sizes = {str(p): len(x) for p, x in sorted(slide_xmls.items())}
-    response_data: dict = {
+    response_data: dict[str, Any] = {
         "model": model,
         "stop_reason": stop_reason,
         "usage": usage_data,

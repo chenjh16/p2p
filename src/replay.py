@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from typing import Any
 
 from . import ApiConfig
 from .logging_config import get_logger
@@ -100,6 +101,8 @@ def run_replay(
     # --- Full conversion replay ---
     if provider == "anthropic":
         from .api_client_anthropic import call_anthropic
+    elif resolved_cfg.use_responses_api:
+        from .api.openai_responses_client import call_llm_responses
     else:
         from .api_client import call_llm
 
@@ -151,7 +154,7 @@ def run_replay(
     total_input_tokens = 0
     total_output_tokens_est = 0
     total_est_response_seconds = 0.0
-    batch_token_estimates: list[dict] = []
+    batch_token_estimates: list[dict[str, Any]] = []
 
     for batch_idx, (start, end) in enumerate(batches):
         batch_pages = pages[start:end]
@@ -199,6 +202,15 @@ def run_replay(
             result = call_anthropic(
                 messages=messages,
                 system_prompt=sys_prompt_text,
+                api_cfg=resolved_cfg,
+                stream_log_path=stream_log,
+                reasoning_effort=reasoning_effort,
+                estimated_response_seconds=float(est_time),
+                on_slide_ready=_on_slide_ready,
+            )
+        elif resolved_cfg.use_responses_api:
+            result = call_llm_responses(
+                messages=messages,
                 api_cfg=resolved_cfg,
                 stream_log_path=stream_log,
                 reasoning_effort=reasoning_effort,

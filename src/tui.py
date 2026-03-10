@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -20,7 +22,7 @@ def confirm_api_call(
     total_pages: int,
     input_tokens: int,
     output_tokens: int,
-    estimated_cost: dict | float,
+    estimated_cost: dict[str, Any] | float,
     estimated_time_seconds: float,
     reasoning_effort: str,
     batch_idx: int,
@@ -60,7 +62,7 @@ def confirm_api_call(
         return True
 
     try:
-        choice = console.input("[bold green]Proceed?[/bold green] [y]es / [s]kip batch / [q]uit: ").strip().lower()
+        choice = console.input("[bold green]Proceed?[/bold green] \\[y]es / \\[s]kip batch / \\[q]uit: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
 

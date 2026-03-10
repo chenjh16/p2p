@@ -1,6 +1,8 @@
 .PHONY: help install install-dev venv lint ruff mypy pylint format test test-unit test-e2e \
        dry-run convert replay clean clean-artifacts clean-all check
 
+.DEFAULT_GOAL := help
+
 PYTHON   ?= python3
 VENV     := .venv
 BIN      := $(VENV)/bin
@@ -24,9 +26,34 @@ REPLAY    ?=
 EXTRA     ?=
 P2P       := $(BIN)/python -m src
 
-help: ## Show this help
+help: ## Show this help (default target)
+	@echo ""
+	@echo "P2P — PDF to PPTX Converter"
+	@echo "============================="
+	@echo ""
+	@echo "Targets:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Conversion variables (override with VAR=value):"
+	@echo "  PDF       Input PDF path (default: raw/example1.pdf)"
+	@echo "  OUTPUT   Output PPTX path (optional)"
+	@echo "  PROVIDER API provider: openai | anthropic (default: openai)"
+	@echo "  MODEL    Model name (override env)"
+	@echo "  DPI      Render DPI: 96|144|192|288 (default: 192)"
+	@echo "  PLANG    Prompt language: en|zh (default: en)"
+	@echo "  REASON   Reasoning effort: low|medium|high|xhigh (default: medium)"
+	@echo "  MAX_PAGES Max pages to convert (0=all)"
+	@echo "  PAGES    Page spec, e.g. 0,2,5-8"
+	@echo "  BATCH    Batch size (0=auto)"
+	@echo "  EXTRA    Extra args passed to p2p (e.g. --use-responses-api)"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make install-dev     # Install with dev deps"
+	@echo "  make dry-run         # Estimate tokens/cost"
+	@echo "  make convert         # Full conversion"
+	@echo "  make replay REPLAY=runs/run-xxx-yyy"
+	@echo ""
 
 # ---------------------------------------------------------------------------
 # Environment
@@ -74,11 +101,11 @@ check: lint test ## Run all linters and tests
 test: ## Run all tests
 	$(PYTEST) tests/ -v
 
-test-unit: ## Run unit tests only
-	$(PYTEST) tests/test_unit.py -v
+test-unit: ## Run unit tests only (excludes e2e)
+	$(PYTEST) tests/ -v --ignore=tests/test_e2e.py --ignore=tests/test_error_recovery.py --ignore=tests/test_continue_run.py
 
 test-e2e: ## Run end-to-end tests only
-	$(PYTEST) tests/test_e2e.py -v
+	$(PYTEST) tests/test_e2e.py tests/test_error_recovery.py tests/test_continue_run.py -v
 
 # ---------------------------------------------------------------------------
 # Conversion

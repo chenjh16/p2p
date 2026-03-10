@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import fitz  # PyMuPDF
 from PIL import Image
@@ -59,13 +60,13 @@ def snap_slide_dimensions(width_pt: float, height_pt: float) -> tuple[float, flo
 
 def pdf_to_images(
     pdf_path: str, dpi: int = 192
-) -> list[tuple[bytes, dict]]:
+) -> list[tuple[bytes, dict[str, Any]]]:
     """Render each PDF page to a high-resolution PNG image.
 
     Returns a list of (png_bytes, metadata) tuples.
     """
     doc = fitz.open(pdf_path)
-    pages: list[tuple[bytes, dict]] = []
+    pages: list[tuple[bytes, dict[str, Any]]] = []
     total_bytes = 0
 
     logger.info("Rendering PDF pages at %d DPI...", dpi)
@@ -108,7 +109,7 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp"}
 
 def images_from_folder(
     folder_path: str,
-) -> list[tuple[bytes, dict]]:
+) -> list[tuple[bytes, dict[str, Any]]]:
     """Load slide images from a folder, sorted by filename in ascending order.
 
     Each image is read as PNG bytes. Dimensions are converted to pt assuming
@@ -129,7 +130,7 @@ def images_from_folder(
         msg = f"No image files found in {folder_path}"
         raise FileNotFoundError(msg)
 
-    pages: list[tuple[bytes, dict]] = []
+    pages: list[tuple[bytes, dict[str, Any]]] = []
     total_bytes = 0
 
     logger.info("Loading %d images from folder: %s", len(image_files), folder_path)
@@ -137,12 +138,12 @@ def images_from_folder(
     for page_num, fname in enumerate(image_files):
         fpath = os.path.join(folder_path, fname)
         with Image.open(fpath) as img:
-            img = img.convert("RGB")
-            width_px, height_px = img.size
+            img_rgb = img.convert("RGB")
+            width_px, height_px = img_rgb.size
             import io
 
             buf = io.BytesIO()
-            img.save(buf, format="PNG")
+            img_rgb.save(buf, format="PNG")
             img_bytes = buf.getvalue()
 
         width_pt = width_px * 0.75

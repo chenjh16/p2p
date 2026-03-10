@@ -17,6 +17,7 @@ Supports model-aware image token calculation for both OpenAI and Anthropic provi
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import tiktoken
 
@@ -112,7 +113,7 @@ def _is_anthropic_model(model: str) -> bool:
     return "claude" in model.lower()
 
 
-def _estimate_image_tokens_for_part(part: dict, model: str, dpi: int) -> int:
+def _estimate_image_tokens_for_part(part: dict[str, Any], model: str, dpi: int) -> int:
     """Estimate tokens for a single image content block.
 
     Handles both OpenAI format (type: "image_url") and Anthropic format (type: "image").
@@ -136,12 +137,12 @@ def _estimate_image_tokens_for_part(part: dict, model: str, dpi: int) -> int:
 
 
 def estimate_tokens(
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     model: str = "gpt-5.4",
     reasoning_effort: str = "medium",
     dpi: int = 288,
     output_tps: float = 0,
-) -> dict:
+) -> dict[str, Any]:
     """Estimate token consumption for the given messages.
 
     Args:
@@ -249,7 +250,7 @@ def recommend_batch_size(
     return max(1, max_pages)
 
 
-def _estimate_cost(input_tokens: int, output_tokens: int) -> dict:
+def _estimate_cost(input_tokens: int, output_tokens: int) -> dict[str, Any]:
     """Estimate cost based on placeholder pricing (may vary)."""
     pricing = {
         "input_per_1m": 2.50,

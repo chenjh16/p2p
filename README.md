@@ -33,9 +33,13 @@ The tool analyzes each slide image with the LLM and directly generates Presentat
 - **Auto Provider Detection** — automatically selects Anthropic API format when model name starts with `claude-`
 - **Image Folder Input** — accepts a folder of slide screenshots (PNG, JPG, etc.) as input, sorted by filename, in addition to PDF files
 - **TUI Confirmation** — Rich-powered TUI panel displays batch info (model, tokens, cost, time) before each API call; skip or auto-confirm with `-y`/`--yes`
+- **Provider Config** — `.p2p.config` JSON file (CWD or `~/`) configures per-provider settings: Responses API, extra headers, `headers_from_key`
+- **OpenAI Responses API** — optional `client.responses.create()` path; auto-detected from `.p2p.config` when `url_prefix` matches, or via `--use-responses-api`
 - **Markdown Prompts** — system prompts managed as markdown files in `src/prompts/`, loaded at runtime for easy editing
 - **Bilingual Prompts** — system prompt available in English and Chinese (`--prompt-lang`)
 - **Optional Animations** — Morph transitions and entrance animations when adjacent slides have similar layouts (`--enable-animations`)
+- **Page Selection** — convert specific pages only via `--pages` (e.g. `0,2,5-8`) or limit with `--max-pages`
+- **Type Annotations** — full mypy strict type checking across the codebase
 
 ## Architecture
 
@@ -95,6 +99,30 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export ANTHROPIC_MODEL_NAME="claude-opus-4-6"  # optional
 ```
 
+### 1.1 Provider config (optional)
+
+Create a `.p2p.config` JSON file in your project directory or home (`~/`). The tool searches CWD first, then `~/`. Copy from the example: `cp .p2p.config.example .p2p.config`. Example:
+
+```json
+{
+  "providers": [
+    {
+      "url_prefix": "https://api.example.com/v1",
+      "use_responses_api": true,
+      "headers": { "X-Custom-Header": "value" },
+      "headers_from_key": ["Authorization"]
+    }
+  ]
+}
+```
+
+- `url_prefix` — matched against `--api-base-url`; first match wins
+- `use_responses_api` — use `client.responses.create()` instead of `client.chat.completions.create()`
+- `headers` — extra HTTP headers sent with each request
+- `headers_from_key` — header names whose value is set to `Bearer <api_key>` at runtime
+
+Override with `--use-responses-api` on the CLI.
+
 ### 2. Convert a PDF
 
 ```bash
@@ -115,6 +143,18 @@ p2p slides.pdf --api-provider anthropic
 
 # From a folder of slide images
 p2p ./slide_images/
+
+# Specific pages only (e.g. 0, 2, 5-8)
+p2p slides.pdf --pages 0,2,5-8
+
+# Use OpenAI Responses API (or auto-detected from .p2p.config)
+p2p slides.pdf --use-responses-api
+
+# Custom output TPS for time estimates
+p2p slides.pdf --output-tps 60
+
+# Skip TUI confirmation (auto-confirm API calls)
+p2p slides.pdf -y
 ```
 
 ### 3. Dry-run (estimate cost without calling API)
@@ -170,14 +210,14 @@ p2p dummy --continue-run runs/run-slides-20260310-161844
 ## CLI Reference
 
 ```
-usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
+usage: p2p [-h] [-o OUTPUT] [-y] [--api-provider {openai,anthropic}]
            [--api-base-url URL] [--api-key KEY] [--model-name MODEL]
            [--dpi {96,144,192,288}] [--enable-animations]
            [--reasoning-effort {low,medium,high,xhigh}]
            [--prompt-lang {en,zh}] [--max-pages N] [--pages SPEC]
            [--batch-size N] [--output-tps TPS] [--skip-postprocess]
            [--dry-run] [--replay DIR] [--continue-run DIR]
-           [--log-level {DEBUG,INFO,WARNING,ERROR}]
+           [--use-responses-api] [--log-level {DEBUG,INFO,WARNING,ERROR}]
            pdf
 ```
 
@@ -201,6 +241,8 @@ usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
 | `--dry-run` | — | `off` | Estimate tokens and cost without calling API |
 | `--replay` | — | `""` | Replay a previous run from its artifact directory |
 | `--continue-run` | — | `""` | Resume an incomplete run from its artifact directory |
+| `-y`, `--yes` | — | `off` | Auto-confirm API calls without TUI prompt |
+| `--use-responses-api` | — | `off` | Use OpenAI Responses API instead of Chat Completions (auto-detected from `.p2p.config` when `url_prefix` matches) |
 | `--log-level` | — | `INFO` | Logging verbosity |
 
 ## Artifact Directories
@@ -309,7 +351,11 @@ p2p/
 │   ├── api/                     # LLM API client subpackage
 │   │   ├── __init__.py          # Re-exports call_llm, call_anthropic, LLMResult
 │   │   ├── openai_client.py     # OpenAI streaming API client
+│   │   ├── openai_responses_client.py  # OpenAI Responses API client
 │   │   └── anthropic_client.py  # Anthropic streaming API client
+│   ├── api_client.py            # Backward-compat re-export → api.openai_client
+│   ├── api_client_anthropic.py # Backward-compat re-export → api.anthropic_client
+│   ├── provider_config.py       # Load .p2p.config (providers, use_responses_api, headers)
 │   ├── system_prompt.py         # Tool definitions + prompt re-exports
 │   ├── pdf_preprocessor.py      # PDF → PNG rendering via PyMuPDF
 │   ├── message_builder.py       # OpenAI/Anthropic messages construction
@@ -334,9 +380,11 @@ p2p/
 │   ├── test_system_prompt.py    # System prompt unit tests
 │   ├── test_artifacts.py        # Artifact store unit tests
 │   ├── test_pptx_assembler.py   # PPTX assembly unit tests
+│   ├── test_provider_config.py  # .p2p.config loading unit tests
 │   └── test_misc.py             # Anthropic effort/budget mapping + logging tests
 ├── docs/
 │   └── design.md                # Detailed design document (EN + ZH)
+├── .p2p.config.example          # Example provider config (copy to .p2p.config)
 ├── Makefile                     # Development and conversion commands
 ├── pyproject.toml               # Project metadata and tool configuration
 ├── LICENSE                      # MIT License
@@ -451,9 +499,13 @@ This project is licensed under the [MIT License](LICENSE).
 - **自动提供商检测** — 当模型名称以 `claude-` 开头时自动选择 Anthropic API 格式
 - **图片文件夹输入** — 除 PDF 文件外，还支持以幻灯片截图文件夹（PNG、JPG 等）作为输入，按文件名升序排列
 - **TUI 确认** — Rich TUI 面板在每次 API 调用前展示批次信息（模型、Token、费用、时间），支持 `-y`/`--yes` 自动确认
+- **供应商配置** — `.p2p.config` JSON 文件（CWD 或 `~/`）配置每个供应商的设置：Responses API、额外请求头、`headers_from_key`
+- **OpenAI Responses API** — 可选的 `client.responses.create()` 路径；当 `.p2p.config` 中 `url_prefix` 匹配时自动检测，或通过 `--use-responses-api` 显式启用
 - **Markdown 提示词管理** — 系统提示词以 Markdown 文件形式存放于 `src/prompts/`，运行时加载，便于编辑
 - **双语提示词** — 系统提示词支持英文和中文（`--prompt-lang`）
 - **可选动画** — 当相邻幻灯片布局相似时添加 Morph 转场和入场动画（`--enable-animations`）
+- **页面选择** — 通过 `--pages`（如 `0,2,5-8`）仅转换指定页面，或使用 `--max-pages` 限制页数
+- **类型注解** — 全代码库 mypy 严格类型检查
 
 ## 架构
 
@@ -513,6 +565,30 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export ANTHROPIC_MODEL_NAME="claude-opus-4-6"  # 可选
 ```
 
+### 1.1 供应商配置（可选）
+
+在项目目录或用户主目录（`~/`）创建 `.p2p.config` JSON 文件。工具会先搜索当前工作目录，再搜索 `~/`。可从示例复制：`cp .p2p.config.example .p2p.config`。示例：
+
+```json
+{
+  "providers": [
+    {
+      "url_prefix": "https://api.example.com/v1",
+      "use_responses_api": true,
+      "headers": { "X-Custom-Header": "value" },
+      "headers_from_key": ["Authorization"]
+    }
+  ]
+}
+```
+
+- `url_prefix` — 与 `--api-base-url` 匹配；首个匹配生效
+- `use_responses_api` — 使用 `client.responses.create()` 替代 `client.chat.completions.create()`
+- `headers` — 每次请求附加的 HTTP 头
+- `headers_from_key` — 运行时将值设为 `Bearer <api_key>` 的请求头名称
+
+可通过 CLI 的 `--use-responses-api` 覆盖。
+
 ### 2. 转换 PDF
 
 ```bash
@@ -533,6 +609,18 @@ p2p slides.pdf --api-provider anthropic
 
 # 从幻灯片截图文件夹转换
 p2p ./slide_images/
+
+# 仅转换指定页面（如 0, 2, 5-8）
+p2p slides.pdf --pages 0,2,5-8
+
+# 使用 OpenAI Responses API（或由 .p2p.config 自动检测）
+p2p slides.pdf --use-responses-api
+
+# 自定义输出 TPS 用于时间估算
+p2p slides.pdf --output-tps 60
+
+# 跳过 TUI 确认（自动确认 API 调用）
+p2p slides.pdf -y
 ```
 
 ### 3. 试运行（估算成本，不调用 API）
@@ -588,14 +676,14 @@ p2p dummy --continue-run runs/run-slides-20260310-161844
 ## 命令行参数
 
 ```
-用法: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
+用法: p2p [-h] [-o OUTPUT] [-y] [--api-provider {openai,anthropic}]
           [--api-base-url URL] [--api-key KEY] [--model-name MODEL]
           [--dpi {96,144,192,288}] [--enable-animations]
           [--reasoning-effort {low,medium,high,xhigh}]
           [--prompt-lang {en,zh}] [--max-pages N] [--pages SPEC]
           [--batch-size N] [--output-tps TPS] [--skip-postprocess]
           [--dry-run] [--replay DIR] [--continue-run DIR]
-          [--log-level {DEBUG,INFO,WARNING,ERROR}]
+          [--use-responses-api] [--log-level {DEBUG,INFO,WARNING,ERROR}]
           pdf
 ```
 
@@ -619,6 +707,8 @@ p2p dummy --continue-run runs/run-slides-20260310-161844
 | `--dry-run` | — | `关闭` | 估算 token 和成本，不调用 API |
 | `--replay` | — | `""` | 从产物目录重放之前的运行 |
 | `--continue-run` | — | `""` | 从产物目录恢复未完成的运行 |
+| `-y`, `--yes` | — | `关闭` | 跳过 TUI 确认，自动执行 API 调用 |
+| `--use-responses-api` | — | `关闭` | 使用 OpenAI Responses API 替代 Chat Completions（当 `.p2p.config` 中 `url_prefix` 匹配时自动检测） |
 | `--log-level` | — | `INFO` | 日志详细程度 |
 
 ## 产物目录
@@ -727,7 +817,11 @@ p2p/
 │   ├── api/                     # LLM API 客户端子包
 │   │   ├── __init__.py          # 导出 call_llm, call_anthropic, LLMResult
 │   │   ├── openai_client.py     # OpenAI 流式 API 客户端
+│   │   ├── openai_responses_client.py  # OpenAI Responses API 客户端
 │   │   └── anthropic_client.py  # Anthropic 流式 API 客户端
+│   ├── api_client.py            # 向后兼容重导出 → api.openai_client
+│   ├── api_client_anthropic.py  # 向后兼容重导出 → api.anthropic_client
+│   ├── provider_config.py       # 加载 .p2p.config（providers、use_responses_api、headers）
 │   ├── system_prompt.py         # 工具定义 + 提示词导出
 │   ├── pdf_preprocessor.py      # PDF → PNG 渲染（PyMuPDF）
 │   ├── message_builder.py       # OpenAI/Anthropic 消息构建
@@ -752,9 +846,11 @@ p2p/
 │   ├── test_system_prompt.py    # 系统提示词单元测试
 │   ├── test_artifacts.py        # 产物存储单元测试
 │   ├── test_pptx_assembler.py   # PPTX 组装单元测试
+│   ├── test_provider_config.py  # .p2p.config 加载单元测试
 │   └── test_misc.py             # Anthropic effort/budget 映射 + 日志测试
 ├── docs/
 │   └── design.md                # 详细设计文档（中英双语）
+├── .p2p.config.example          # 供应商配置示例（复制为 .p2p.config）
 ├── Makefile                     # 开发和转换命令
 ├── pyproject.toml               # 项目元数据和工具配置
 ├── LICENSE                      # MIT 许可证
