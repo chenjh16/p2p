@@ -31,9 +31,11 @@ class TestSystemPrompt:
         assert "Morph 转场" in section
 
     def test_default_is_english(self):
-        from src.system_prompt import SYSTEM_PROMPT, SYSTEM_PROMPT_EN
+        from src.system_prompt import get_system_prompt
 
-        assert SYSTEM_PROMPT == SYSTEM_PROMPT_EN
+        default = get_system_prompt()
+        english = get_system_prompt("en")
+        assert default == english
 
     def test_tool_definition_structure(self):
         from src.system_prompt import WRITE_SLIDE_XML_TOOL

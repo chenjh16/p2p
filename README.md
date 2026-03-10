@@ -17,7 +17,7 @@ The tool analyzes each slide image with the LLM and directly generates Presentat
 - **High Visual Fidelity** — reconstructed slides closely match the original PDF layout, colors, fonts, and styling
 - **Native Editability** — maximizes use of PowerPoint vector elements (text boxes, shapes, tables, connectors, groups) for full editability
 - **Atomic Reconstruction** — decomposes every visual region into its smallest independently rebuildable units
-- **Smart Raster Handling** — only uses image placeholders for genuinely photographic content; diagrams and tables are always vectorized
+- **Smart Raster Handling** — only uses image placeholders for genuinely photographic content; diagrams, tables, and simple icons are always vectorized
 - **Single API Call** — processes all pages in one LLM request via parallel tool calls
 - **Streaming Output** — real-time display of LLM output (content, reasoning, tool calls) during conversion
 - **Aspect Ratio Detection** — automatically detects page aspect ratio (16:9, 4:3, 16:10) and snaps to standard PowerPoint dimensions
@@ -29,8 +29,11 @@ The tool analyzes each slide image with the LLM and directly generates Presentat
 - **Replay** — re-run a previous conversion with the same parameters (`--replay`)
 - **Immediate Slide Persistence** — each slide XML is written to disk as soon as its tool call completes during streaming, preventing data loss on crashes
 - **Configurable TPS** — tune estimated output tokens-per-second for accurate time estimates (`--output-tps`, default 50)
+- **ApiConfig** — API credentials (`api_key`, `api_base_url`, `model_name`) bundled in a frozen `ApiConfig` dataclass, passed as a single object across modules
 - **Auto Provider Detection** — automatically selects Anthropic API format when model name starts with `claude-`
 - **Image Folder Input** — accepts a folder of slide screenshots (PNG, JPG, etc.) as input, sorted by filename, in addition to PDF files
+- **TUI Confirmation** — Rich-powered TUI panel displays batch info (model, tokens, cost, time) before each API call; skip or auto-confirm with `-y`/`--yes`
+- **Markdown Prompts** — system prompts managed as markdown files in `src/prompts/`, loaded at runtime for easy editing
 - **Bilingual Prompts** — system prompt available in English and Chinese (`--prompt-lang`)
 - **Optional Animations** — Morph transitions and entrance animations when adjacent slides have similar layouts (`--enable-animations`)
 
@@ -265,6 +268,7 @@ The system prompt instructs the LLM to act as a "presentation reconstruction eng
 5. **Font Size Calibration** — mandatory 20% reduction to compensate for systematic overestimation
 6. **Table Vectorization** — tables must always use native `<a:tbl>`, never raster placeholders
 7. **Diagram Vectorization** — flowcharts and diagrams of basic shapes must be decomposed into vector elements
+8. **Icon Vectorization** — simple icons (checkmarks, gears, light bulbs, etc.) drawn using DrawingML preset shapes, Unicode/emoji, custom geometry, or grouped shapes instead of raster placeholders
 
 ### Raster Post-Processing
 
@@ -295,12 +299,21 @@ p2p/
 │   ├── __init__.py              # ApiConfig dataclass
 │   ├── __main__.py              # python -m src entry point
 │   ├── main.py                  # CLI entry point and pipeline orchestration
-│   ├── system_prompt.py         # System prompts (EN/ZH) and tool definitions
+│   ├── tui.py                   # Rich TUI panels for API call confirmation
+│   ├── prompts/                 # System prompts loaded from markdown files
+│   │   ├── __init__.py          # Prompt loader (get_system_prompt, get_animation_section)
+│   │   ├── system_en.md         # English system prompt
+│   │   ├── system_zh.md         # Chinese system prompt
+│   │   ├── animation_en.md      # English animation rules
+│   │   └── animation_zh.md      # Chinese animation rules
+│   ├── api/                     # LLM API client subpackage
+│   │   ├── __init__.py          # Re-exports call_llm, call_anthropic, LLMResult
+│   │   ├── openai_client.py     # OpenAI streaming API client
+│   │   └── anthropic_client.py  # Anthropic streaming API client
+│   ├── system_prompt.py         # Tool definitions + prompt re-exports
 │   ├── pdf_preprocessor.py      # PDF → PNG rendering via PyMuPDF
 │   ├── message_builder.py       # OpenAI/Anthropic messages construction
 │   ├── token_estimator.py       # Token counting, cost estimation, batch sizing
-│   ├── api_client.py            # OpenAI streaming LLM API client
-│   ├── api_client_anthropic.py  # Anthropic streaming LLM API client
 │   ├── xml_validator.py         # XML validation and repair
 │   ├── pptx_assembler.py        # PPTX file assembly from slide XMLs
 │   ├── postprocessor.py         # Raster placeholder replacement
@@ -422,7 +435,7 @@ This project is licensed under the [MIT License](LICENSE).
 - **高视觉保真度** — 重建的幻灯片在布局、颜色、字体和样式上与原始 PDF 高度一致
 - **原生可编辑性** — 最大化使用 PowerPoint 矢量元素（文本框、形状、表格、连接线、组合）以实现完全可编辑
 - **原子化重建** — 将每个视觉区域分解为最小的可独立重建单元
-- **智能光栅处理** — 仅对真正的照片内容使用图像占位符；图表和表格始终矢量化
+- **智能光栅处理** — 仅对真正的照片内容使用图像占位符；图表、表格和简单图标始终矢量化
 - **单次 API 调用** — 通过并行工具调用在一次 LLM 请求中处理所有页面
 - **流式输出** — 转换过程中实时显示 LLM 输出（内容、推理、工具调用）
 - **宽高比检测** — 自动检测页面宽高比（16:9、4:3、16:10）并对齐到标准 PowerPoint 尺寸
@@ -434,8 +447,11 @@ This project is licensed under the [MIT License](LICENSE).
 - **重放** — 使用相同参数重新运行之前的转换（`--replay`）
 - **即时幻灯片持久化** — 流式传输过程中，每个幻灯片 XML 在其工具调用完成后立即写入磁盘，防止崩溃导致数据丢失
 - **可配置 TPS** — 调整预估输出 token 速率以获得准确的时间估算（`--output-tps`，默认 50）
+- **ApiConfig** — API 凭证（`api_key`、`api_base_url`、`model_name`）封装在 frozen `ApiConfig` 数据类中，作为单一对象跨模块传递
 - **自动提供商检测** — 当模型名称以 `claude-` 开头时自动选择 Anthropic API 格式
 - **图片文件夹输入** — 除 PDF 文件外，还支持以幻灯片截图文件夹（PNG、JPG 等）作为输入，按文件名升序排列
+- **TUI 确认** — Rich TUI 面板在每次 API 调用前展示批次信息（模型、Token、费用、时间），支持 `-y`/`--yes` 自动确认
+- **Markdown 提示词管理** — 系统提示词以 Markdown 文件形式存放于 `src/prompts/`，运行时加载，便于编辑
 - **双语提示词** — 系统提示词支持英文和中文（`--prompt-lang`）
 - **可选动画** — 当相邻幻灯片布局相似时添加 Morph 转场和入场动画（`--enable-animations`）
 
@@ -670,6 +686,7 @@ runs/run-slides-20260309-143052/
 5. **字体大小校准** — 强制缩小 20% 以补偿系统性高估
 6. **表格矢量化** — 表格必须始终使用原生 `<a:tbl>`，绝不使用光栅占位符
 7. **图表矢量化** — 由基本形状组成的流程图和图表必须分解为矢量元素
+8. **图标矢量化** — 简单图标（对勾、齿轮、灯泡等）使用 DrawingML 预设形状、Unicode/emoji、自定义几何或组合形状绘制，而非光栅占位符
 
 ### 光栅后处理
 
@@ -700,12 +717,21 @@ p2p/
 │   ├── __init__.py              # ApiConfig 数据类
 │   ├── __main__.py              # python -m src 入口
 │   ├── main.py                  # CLI 入口和流程编排
-│   ├── system_prompt.py         # 系统提示词（中/英）和工具定义
+│   ├── tui.py                   # Rich TUI 面板（API 调用确认）
+│   ├── prompts/                 # 系统提示词（从 Markdown 文件加载）
+│   │   ├── __init__.py          # 提示词加载器
+│   │   ├── system_en.md         # 英文系统提示词
+│   │   ├── system_zh.md         # 中文系统提示词
+│   │   ├── animation_en.md      # 英文动画规则
+│   │   └── animation_zh.md      # 中文动画规则
+│   ├── api/                     # LLM API 客户端子包
+│   │   ├── __init__.py          # 导出 call_llm, call_anthropic, LLMResult
+│   │   ├── openai_client.py     # OpenAI 流式 API 客户端
+│   │   └── anthropic_client.py  # Anthropic 流式 API 客户端
+│   ├── system_prompt.py         # 工具定义 + 提示词导出
 │   ├── pdf_preprocessor.py      # PDF → PNG 渲染（PyMuPDF）
 │   ├── message_builder.py       # OpenAI/Anthropic 消息构建
 │   ├── token_estimator.py       # Token 计数、成本估算、批次大小计算
-│   ├── api_client.py            # OpenAI 流式 LLM API 客户端
-│   ├── api_client_anthropic.py  # Anthropic 流式 LLM API 客户端
 │   ├── xml_validator.py         # XML 验证和修复
 │   ├── pptx_assembler.py        # 从幻灯片 XML 组装 PPTX 文件
 │   ├── postprocessor.py         # 光栅占位符替换

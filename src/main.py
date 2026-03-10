@@ -175,6 +175,12 @@ def main() -> None:
         help="Continue a previous incomplete run from its artifact directory, resuming from where it left off",
     )
     parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        default=False,
+        help="Auto-confirm API calls without TUI prompt",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -478,6 +484,28 @@ def main() -> None:
         )
 
         stream_log = os.path.join(store.root, f"stream_batch{store.batch_suffix(batch_idx)}.log")
+
+        from .tui import confirm_api_call
+
+        if not confirm_api_call(
+            batch_label=batch_label,
+            provider=provider,
+            model_name=api_cfg.model_name,
+            api_base_url=api_cfg.api_base_url,
+            n_pages=len(batch_pages),
+            total_pages=n_pages,
+            input_tokens=token_est["total_input_tokens"],
+            output_tokens=token_est["estimated_output_tokens"],
+            estimated_cost=token_est.get("estimated_cost_usd", 0.0),
+            estimated_time_seconds=est_time,
+            reasoning_effort=args.reasoning_effort,
+            batch_idx=batch_idx,
+            total_batches=n_batches,
+            auto_confirm=args.yes,
+        ):
+            logger.info("Skipped %s", batch_label)
+            continue
+
         logger.info("Calling LLM API for %s (%s)", batch_label, provider)
 
         def _on_slide_ready(batch_local_num: int, xml_str: str) -> None:
