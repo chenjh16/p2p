@@ -70,7 +70,7 @@ def main() -> None:
         description="Convert PDF slides to editable PPTX using multimodal LLM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("pdf", help="Input PDF file path")
+    parser.add_argument("pdf", help="Input PDF file or folder of slide images")
     parser.add_argument("-o", "--output", default="", help="Output PPTX file path")
 
     # API provider selection
@@ -228,16 +228,22 @@ def main() -> None:
     if args.pages:
         args.max_pages = 0
 
-    # Validate input
-    if not os.path.isfile(args.pdf):
-        logger.error("Input file not found: %s", args.pdf)
+    # Detect input type: PDF file or image folder
+    is_folder_input = os.path.isdir(args.pdf)
+
+    if not is_folder_input and not os.path.isfile(args.pdf):
+        logger.error("Input file or folder not found: %s", args.pdf)
         sys.exit(1)
 
     if not args.output and not args.dry_run:
-        base = os.path.splitext(os.path.basename(args.pdf))[0]
+        if is_folder_input:
+            base = os.path.basename(os.path.normpath(args.pdf))
+        else:
+            base = os.path.splitext(os.path.basename(args.pdf))[0]
         args.output = f"{base}.pptx"
 
-    logger.info("Starting PDF → PPTX conversion")
+    input_label = "folder" if is_folder_input else "PDF"
+    logger.info("Starting %s → PPTX conversion", input_label)
     logger.info("Input: %s", args.pdf)
     logger.info(
         "Options: provider=%s, dpi=%d, animations=%s, model=%s, reasoning=%s",
@@ -295,7 +301,7 @@ def main() -> None:
 
     from .artifacts import ArtifactStore
     from .message_builder import build_messages, get_system_prompt_text
-    from .pdf_preprocessor import pdf_to_images, snap_slide_dimensions
+    from .pdf_preprocessor import images_from_folder, pdf_to_images, snap_slide_dimensions
     from .postprocessor import postprocess_raster_fills
     from .pptx_assembler import PPTXAssembler
     from .system_prompt import WRITE_SLIDE_XML_TOOL, WRITE_SLIDE_XML_TOOL_ANTHROPIC
@@ -307,7 +313,8 @@ def main() -> None:
         from .api_client import call_llm
 
     store = ArtifactStore(pdf_path=args.pdf)
-    store.copy_input(args.pdf)
+    if not is_folder_input:
+        store.copy_input(args.pdf)
 
     # Auto-calculate batch size if not specified (0 = auto)
     if args.batch_size <= 0:
@@ -340,8 +347,11 @@ def main() -> None:
             run_params[key] = val
     store.save_run_params(run_params)
 
-    # Step 1: PDF preprocessing
-    all_pages = pdf_to_images(args.pdf, dpi=args.dpi)
+    # Step 1: Load images (from PDF or folder)
+    if is_folder_input:
+        all_pages = images_from_folder(args.pdf)
+    else:
+        all_pages = pdf_to_images(args.pdf, dpi=args.dpi)
     if page_indices is not None:
         pages = [p for p in all_pages if p[1]["page_num"] in page_indices]
     elif args.max_pages > 0:
@@ -382,7 +392,8 @@ def main() -> None:
     def _save_metadata(*, success: bool) -> None:
         store.save_metadata({
             "runtime_params": {
-                "pdf_path": os.path.abspath(args.pdf),
+                "input_path": os.path.abspath(args.pdf),
+                "input_type": "folder" if is_folder_input else "pdf",
                 "output_pptx": os.path.abspath(args.output) if args.output else "",
                 "api_provider": provider,
                 "api_base_url": args.api_base_url,
@@ -558,18 +569,19 @@ def main() -> None:
     )
     assembler.assemble(slide_xmls)
 
-    if args.skip_postprocess:
+    skip_post = args.skip_postprocess or is_folder_input
+    if is_folder_input and not args.skip_postprocess:
+        logger.info("Raster post-processing skipped (folder input has no PDF to crop from)")
+
+    if skip_post:
         assembler.save(args.output)
     else:
         intermediate = args.output + ".tmp"
         assembler.save(intermediate)
 
-        # Build PDF page mapping: PPTX slide position → original PDF page number
-        # The LLM numbers slides 0..N-1 sequentially; each maps to pages[i]'s original page_num
         sorted_slide_keys = sorted(slide_xmls.keys())
         pdf_page_map = [pages[k][1]["page_num"] for k in sorted_slide_keys if k < len(pages)]
 
-        # Step 3: Post-process raster fills
         postprocess_raster_fills(
             pptx_path=intermediate,
             pdf_path=args.pdf,

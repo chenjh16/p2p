@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from .artifacts import ArtifactStore
 from .logging_config import get_logger
 from .message_builder import build_messages, get_system_prompt_text
-from .pdf_preprocessor import pdf_to_images
+from .pdf_preprocessor import images_from_folder, pdf_to_images
 from .system_prompt import WRITE_SLIDE_XML_TOOL, WRITE_SLIDE_XML_TOOL_ANTHROPIC
 from .token_estimator import estimate_tokens, recommend_batch_size
 
@@ -36,8 +36,10 @@ def run_dry(
     the user.  If *None*, a full parameter dict is saved for backward compat.
     ``output_tps`` overrides the assumed output tokens/second (0 = module default).
     """
+    is_folder = os.path.isdir(pdf_path)
     store = ArtifactStore(pdf_path=pdf_path, dry_run=True)
-    store.copy_input(pdf_path)
+    if not is_folder:
+        store.copy_input(pdf_path)
 
     # Auto-calculate batch size if not specified (0 = auto)
     batch_size_auto = batch_size <= 0
@@ -62,8 +64,11 @@ def run_dry(
             "dry_run": True,
         })
 
-    # Step 1: PDF preprocessing
-    all_pages = pdf_to_images(pdf_path, dpi=dpi)
+    # Step 1: Load images (from PDF or folder)
+    if is_folder:
+        all_pages = images_from_folder(pdf_path)
+    else:
+        all_pages = pdf_to_images(pdf_path, dpi=dpi)
     if page_indices is not None:
         pages = [p for p in all_pages if p[1]["page_num"] in page_indices]
     elif max_pages > 0:
@@ -151,14 +156,15 @@ def run_dry(
     logger.info("=" * 60)
     logger.info("DRY-RUN SUMMARY")
     logger.info("=" * 60)
-    logger.info("  PDF:              %s", pdf_path)
+    logger.info("  Input:            %s%s", pdf_path, " (folder)" if is_folder else "")
     logger.info("  Pages:            %d", len(pages))
     logger.info(
         "  Slide size:       %.0fpt × %.0fpt",
         pages[0][1]["width_pt"],
         pages[0][1]["height_pt"],
     )
-    logger.info("  DPI:              %d", dpi)
+    if not is_folder:
+        logger.info("  DPI:              %d", dpi)
     logger.info(
         "  Animations:       %s",
         "enabled" if enable_animations else "disabled",

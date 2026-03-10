@@ -30,6 +30,7 @@ The tool analyzes each slide image with the LLM and directly generates Presentat
 - **Immediate Slide Persistence** — each slide XML is written to disk as soon as its tool call completes during streaming, preventing data loss on crashes
 - **Configurable TPS** — tune estimated output tokens-per-second for accurate time estimates (`--output-tps`, default 50)
 - **Auto Provider Detection** — automatically selects Anthropic API format when model name starts with `claude-`
+- **Image Folder Input** — accepts a folder of slide screenshots (PNG, JPG, etc.) as input, sorted by filename, in addition to PDF files
 - **Bilingual Prompts** — system prompt available in English and Chinese (`--prompt-lang`)
 - **Optional Animations** — Morph transitions and entrance animations when adjacent slides have similar layouts (`--enable-animations`)
 
@@ -46,7 +47,7 @@ PDF ──→ [PyMuPDF] ──→ Page Images ──→ [LLM API] ──→ Slid
 
 **Pipeline stages:**
 
-1. **PDF Preprocessing** — render each page to a high-resolution PNG image (default 192 DPI)
+1. **Preprocessing** — render each PDF page to a high-resolution PNG image (default 192 DPI), or load images directly from a folder (sorted by filename)
 2. **Message Building** — construct the OpenAI Chat Completions messages with system prompt, page images, and task instructions
 3. **LLM API Call** — stream the LLM's response, extracting `write_slide_xml` tool calls with PresentationML XML for each page; each slide XML is persisted to disk immediately upon tool call completion
 4. **XML Validation** — parse, validate, and repair the generated XML (strip code fences, fix common errors, register relationships)
@@ -108,6 +109,9 @@ p2p slides.pdf --prompt-lang zh
 
 # Using Anthropic Claude
 p2p slides.pdf --api-provider anthropic
+
+# From a folder of slide images
+p2p ./slide_images/
 ```
 
 ### 3. Dry-run (estimate cost without calling API)
@@ -176,7 +180,7 @@ usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
 
 | Argument | Env Variable | Default | Description |
 |---|---|---|---|
-| `pdf` | — | *(required)* | Input PDF file path |
+| `pdf` | — | *(required)* | Input PDF file or folder of slide images |
 | `-o`, `--output` | — | `<basename>.pptx` | Output PPTX file path |
 | `--api-provider` | `LLM_PROVIDER` | `openai` | API provider: `openai` or `anthropic` (auto-detected from model name) |
 | `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | `""` | API base URL |
@@ -351,10 +355,10 @@ pylint src/
 python -m pytest tests/ -v
 ```
 
-The test suite includes 87 tests across 11 focused modules:
+The test suite includes 89 tests across 11 focused modules:
 
 **End-to-end tests:**
-- `test_e2e.py` — core pipeline: dry-run, full conversion (OpenAI + Anthropic), custom output TPS, multi-batch conversion
+- `test_e2e.py` — core pipeline: dry-run, full conversion (OpenAI + Anthropic), custom output TPS, multi-batch conversion, folder input conversion and dry-run
 - `test_error_recovery.py` — batch-level error recovery: retry, skip to post-processing, quit with metadata
 - `test_continue_run.py` — resume incomplete runs: post-process only, generate missing, quit, missing directory
 
@@ -388,6 +392,10 @@ The test suite includes 87 tests across 11 focused modules:
 | `lxml` | XML parsing, validation, and manipulation |
 | `tiktoken` | Token counting for cost estimation |
 | `rich` | Colored, structured console logging |
+
+## Notes
+
+When using folder input, raster post-processing is automatically skipped since there is no source PDF to crop from. Supported image formats: PNG, JPG, JPEG, BMP, TIFF, WebP.
 
 ## License
 
@@ -427,6 +435,7 @@ This project is licensed under the [MIT License](LICENSE).
 - **即时幻灯片持久化** — 流式传输过程中，每个幻灯片 XML 在其工具调用完成后立即写入磁盘，防止崩溃导致数据丢失
 - **可配置 TPS** — 调整预估输出 token 速率以获得准确的时间估算（`--output-tps`，默认 50）
 - **自动提供商检测** — 当模型名称以 `claude-` 开头时自动选择 Anthropic API 格式
+- **图片文件夹输入** — 除 PDF 文件外，还支持以幻灯片截图文件夹（PNG、JPG 等）作为输入，按文件名升序排列
 - **双语提示词** — 系统提示词支持英文和中文（`--prompt-lang`）
 - **可选动画** — 当相邻幻灯片布局相似时添加 Morph 转场和入场动画（`--enable-animations`）
 
@@ -443,7 +452,7 @@ PDF ──→ [PyMuPDF] ──→ 页面图像 ──→ [LLM API] ──→ 幻
 
 **处理流程：**
 
-1. **PDF 预处理** — 将每页渲染为高分辨率 PNG 图像（默认 192 DPI）
+1. **预处理** — 将每页 PDF 渲染为高分辨率 PNG 图像（默认 192 DPI），或直接从文件夹加载图片（按文件名排序）
 2. **消息构建** — 构建包含系统提示词、页面图像和任务指令的 OpenAI Chat Completions 消息
 3. **LLM API 调用** — 流式接收 LLM 的响应，提取每页的 `write_slide_xml` 工具调用及 PresentationML XML；每个幻灯片 XML 在工具调用完成后立即持久化到磁盘
 4. **XML 验证** — 解析、验证并修复生成的 XML（去除代码围栏、修复常见错误、注册关系）
@@ -505,6 +514,9 @@ p2p slides.pdf --prompt-lang zh
 
 # 使用 Anthropic Claude
 p2p slides.pdf --api-provider anthropic
+
+# 从幻灯片截图文件夹转换
+p2p ./slide_images/
 ```
 
 ### 3. 试运行（估算成本，不调用 API）
@@ -573,7 +585,7 @@ p2p dummy --continue-run runs/run-slides-20260310-161844
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 |---|---|---|---|
-| `pdf` | — | *（必填）* | 输入 PDF 文件路径 |
+| `pdf` | — | *（必填）* | 输入 PDF 文件或幻灯片截图文件夹 |
 | `-o`, `--output` | — | `<文件名>.pptx` | 输出 PPTX 文件路径 |
 | `--api-provider` | `LLM_PROVIDER` | `openai` | API 提供商：`openai` 或 `anthropic`（可从模型名自动检测） |
 | `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | `""` | API 基础 URL |
@@ -748,10 +760,10 @@ pylint src/
 python -m pytest tests/ -v
 ```
 
-测试套件包含 87 项测试，分布在 11 个专注模块中：
+测试套件包含 89 项测试，分布在 11 个专注模块中：
 
 **端到端测试：**
-- `test_e2e.py` — 核心流程：试运行、完整转换（OpenAI + Anthropic）、自定义输出 TPS、多批次转换
+- `test_e2e.py` — 核心流程：试运行、完整转换（OpenAI + Anthropic）、自定义输出 TPS、多批次转换、文件夹输入转换和试运行
 - `test_error_recovery.py` — 批次级错误恢复：重试、跳过到后处理、退出并保存元数据
 - `test_continue_run.py` — 恢复未完成运行：仅后处理、生成缺失页、退出、目录不存在
 
@@ -785,6 +797,10 @@ python -m pytest tests/ -v
 | `lxml` | XML 解析、验证和操作 |
 | `tiktoken` | Token 计数（成本估算） |
 | `rich` | 彩色结构化控制台日志 |
+
+## 说明
+
+使用文件夹输入时，光栅后处理会自动跳过，因为没有源 PDF 可供裁剪。支持的图片格式：PNG、JPG、JPEG、BMP、TIFF、WebP。
 
 ## 许可证
 

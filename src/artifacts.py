@@ -30,7 +30,8 @@ class ArtifactStore:
             replay_of: If non-empty, prefix with ``replay-`` (value is the
                 source directory being replayed).
         """
-        base = os.path.splitext(os.path.basename(pdf_path))[0]
+        normalized = os.path.normpath(pdf_path)
+        base = os.path.splitext(os.path.basename(normalized))[0]
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         if replay_of:
             prefix = "replay"

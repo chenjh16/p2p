@@ -342,3 +342,113 @@ def test_multi_batch_conversion(mock_server, tmp_path):
 
     shutil.rmtree("runs")
     os.remove(output_pptx)
+
+
+def test_folder_input_conversion(mock_server, tmp_path):
+    """Full conversion from a folder of slide images should produce a valid PPTX."""
+    os.chdir(tmp_path)
+    from PIL import Image
+
+    from src.api_client import call_llm
+    from src.artifacts import ArtifactStore
+    from src.logging_config import setup_logging
+    from src.message_builder import build_messages
+    from src.pdf_preprocessor import images_from_folder, snap_slide_dimensions
+    from src.pptx_assembler import PPTXAssembler
+    from src.token_estimator import estimate_tokens
+
+    setup_logging("WARNING")
+
+    img_dir = str(tmp_path / "slides_folder")
+    os.makedirs(img_dir)
+    for i in range(3):
+        img = Image.new("RGB", (960, 540), color=(200 + i * 20, 100, 50))
+        img.save(os.path.join(img_dir, f"slide_{i:02d}.png"))
+
+    pages = images_from_folder(img_dir)
+    assert len(pages) == 3
+    for idx, (_img_bytes, meta) in enumerate(pages):
+        assert meta["page_num"] == idx
+        assert meta["width_px"] == 960
+        assert meta["height_px"] == 540
+        assert "source_file" in meta
+
+    store = ArtifactStore(pdf_path=img_dir)
+    store.save_page_images(pages)
+
+    raw_w = pages[0][1]["width_pt"]
+    raw_h = pages[0][1]["height_pt"]
+    snap_w, snap_h, _ratio_label = snap_slide_dimensions(raw_w, raw_h)
+
+    messages = build_messages(pages, enable_animations=False, prompt_lang="en", provider="openai")
+    store.save_messages(messages, batch_idx=0)
+
+    token_est = estimate_tokens(messages, model="gpt-5.4")
+    store.save_token_estimate(token_est)
+
+    result = call_llm(
+        messages=messages,
+        api_base_url=MOCK_BASE_URL,
+        api_key="test-key",
+        model_name="gpt-5.4",
+        max_tokens=4096,
+        reasoning_effort="",
+    )
+
+    assert len(result.slide_xmls) == 3
+    store.save_slide_xmls(result.slide_xmls)
+
+    assembler = PPTXAssembler(slide_width_pt=snap_w, slide_height_pt=snap_h)
+    assembler.assemble(result.slide_xmls)
+    output_pptx = str(tmp_path / "folder_output.pptx")
+    assembler.save(output_pptx)
+
+    prs = Presentation(output_pptx)
+    assert len(prs.slides) == 3
+    for i in range(3):
+        slide = prs.slides[i]
+        texts = [shape.text for shape in slide.shapes if hasattr(shape, "text")]
+        assert any("Test Slide Page" in t for t in texts)
+
+    assert os.path.isdir(store.pages_dir)
+    assert os.path.isdir(store.slides_dir)
+
+    shutil.rmtree("runs")
+    os.remove(output_pptx)
+
+
+def test_folder_input_dry_run(tmp_path):
+    """Dry-run from a folder of images should produce artifacts without calling the API."""
+    os.chdir(tmp_path)
+    from PIL import Image
+
+    from src.dry_run import run_dry
+    from src.logging_config import setup_logging
+
+    setup_logging("WARNING")
+
+    img_dir = str(tmp_path / "dry_slides")
+    os.makedirs(img_dir)
+    for i in range(2):
+        img = Image.new("RGB", (960, 540), color=(100, 150 + i * 30, 200))
+        img.save(os.path.join(img_dir, f"page_{i:02d}.jpg"))
+
+    output_dir = run_dry(
+        pdf_path=img_dir,
+        dpi=96,
+        enable_animations=False,
+        model_name="gpt-5.4",
+        batch_size=25,
+    )
+
+    assert output_dir.startswith("runs/")
+    assert os.path.isdir(output_dir)
+    assert os.path.isfile(os.path.join(output_dir, "metadata.json"))
+    assert os.path.isfile(os.path.join(output_dir, "messages_0.json"))
+    assert os.path.isfile(os.path.join(output_dir, "token_estimate.json"))
+    assert os.path.isdir(os.path.join(output_dir, "pages"))
+
+    page_files = os.listdir(os.path.join(output_dir, "pages"))
+    assert len(page_files) == 2
+
+    shutil.rmtree("runs")
