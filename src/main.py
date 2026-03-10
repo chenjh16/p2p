@@ -11,27 +11,35 @@ import time
 def main() -> None:
     """Parse CLI args and run the full conversion or dry-run pipeline."""
     parser = argparse.ArgumentParser(
-        description="Convert PDF slides to editable PPTX using GPT-5.4",
+        description="Convert PDF slides to editable PPTX using multimodal LLM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("pdf", help="Input PDF file path")
     parser.add_argument("-o", "--output", default="", help="Output PPTX file path")
 
-    # OpenAI API configuration
+    # API provider selection
+    parser.add_argument(
+        "--api-provider",
+        default=os.getenv("LLM_PROVIDER", "openai"),
+        choices=["openai", "anthropic"],
+        help="LLM API provider (default: $LLM_PROVIDER or openai)",
+    )
+
+    # API configuration (provider-agnostic)
     parser.add_argument(
         "--api-base-url",
-        default=os.getenv("OPENAI_BASE_URL", ""),
-        help="OpenAI API Base URL (default: $OPENAI_BASE_URL)",
+        default="",
+        help="API Base URL (default: $OPENAI_BASE_URL or $ANTHROPIC_BASE_URL)",
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("OPENAI_API_KEY", ""),
-        help="OpenAI API Key (default: $OPENAI_API_KEY)",
+        default="",
+        help="API Key (default: $OPENAI_API_KEY or $ANTHROPIC_API_KEY)",
     )
     parser.add_argument(
         "--model-name",
-        default=os.getenv("OPENAI_MODEL_NAME", "gpt-5.4"),
-        help="Model name (default: $OPENAI_MODEL_NAME or gpt-5.4)",
+        default="",
+        help="Model name (default: gpt-5.4 for openai, claude-opus-4-6 for anthropic)",
     )
 
     # Processing options
@@ -56,10 +64,16 @@ def main() -> None:
         help="System prompt language: en=English, zh=Chinese (default: en)",
     )
     parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=5,
+        help="Maximum number of pages to convert (default: 5)",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
-        default=25,
-        help="Batch size for large documents (default: 25)",
+        default=5,
+        help="Batch size for large documents (default: 5)",
     )
     parser.add_argument(
         "--skip-postprocess",
@@ -88,6 +102,24 @@ def main() -> None:
     setup_logging(args.log_level)
     logger = get_logger("main")
 
+    # Resolve provider-specific defaults
+    provider = args.api_provider
+    if not args.api_key:
+        if provider == "anthropic":
+            args.api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        else:
+            args.api_key = os.getenv("OPENAI_API_KEY", "")
+    if not args.api_base_url:
+        if provider == "anthropic":
+            args.api_base_url = os.getenv("ANTHROPIC_BASE_URL", "")
+        else:
+            args.api_base_url = os.getenv("OPENAI_BASE_URL", "")
+    if not args.model_name:
+        if provider == "anthropic":
+            args.model_name = os.getenv("ANTHROPIC_MODEL_NAME", "claude-opus-4-6")
+        else:
+            args.model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-5.4")
+
     # Validate input
     if not os.path.isfile(args.pdf):
         logger.error("Input file not found: %s", args.pdf)
@@ -100,7 +132,8 @@ def main() -> None:
     logger.info("Starting PDF → PPTX conversion")
     logger.info("Input: %s", args.pdf)
     logger.info(
-        "Options: dpi=%d, animations=%s, model=%s, reasoning=%s",
+        "Options: provider=%s, dpi=%d, animations=%s, model=%s, reasoning=%s",
+        provider,
         args.dpi,
         "on" if args.enable_animations else "off",
         args.model_name,
@@ -118,35 +151,43 @@ def main() -> None:
             dpi=args.dpi,
             enable_animations=args.enable_animations,
             model_name=args.model_name,
+            max_pages=args.max_pages,
             batch_size=args.batch_size,
             prompt_lang=args.prompt_lang,
             reasoning_effort=args.reasoning_effort,
+            provider=provider,
         )
         return
 
     # --- Full conversion ---
     import contextlib
 
-    from .api_client import call_llm
     from .artifacts import ArtifactStore
-    from .message_builder import build_messages
+    from .message_builder import build_messages, get_system_prompt_text
     from .pdf_preprocessor import pdf_to_images, snap_slide_dimensions
     from .postprocessor import postprocess_raster_fills
     from .pptx_assembler import PPTXAssembler
-    from .system_prompt import WRITE_SLIDE_XML_TOOL
+    from .system_prompt import WRITE_SLIDE_XML_TOOL, WRITE_SLIDE_XML_TOOL_ANTHROPIC
     from .token_estimator import estimate_tokens
+
+    if provider == "anthropic":
+        from .api_client_anthropic import call_anthropic
+    else:
+        from .api_client import call_llm
 
     store = ArtifactStore(pdf_path=args.pdf)
 
     store.save_run_params({
         "pdf": os.path.abspath(args.pdf),
         "output": os.path.abspath(args.output) if args.output else "",
+        "api_provider": provider,
         "api_base_url": args.api_base_url,
         "model_name": args.model_name,
         "dpi": args.dpi,
         "enable_animations": args.enable_animations,
         "reasoning_effort": args.reasoning_effort,
         "prompt_lang": args.prompt_lang,
+        "max_pages": args.max_pages,
         "batch_size": args.batch_size,
         "skip_postprocess": args.skip_postprocess,
         "log_level": args.log_level,
@@ -154,6 +195,7 @@ def main() -> None:
 
     # Step 1: PDF preprocessing
     pages = pdf_to_images(args.pdf, dpi=args.dpi)
+    pages = pages[: args.max_pages]
     store.save_page_images(pages)
 
     # Step 2+3: Build messages and call LLM API, with batching for large PDFs
@@ -182,12 +224,16 @@ def main() -> None:
         batch_label = f"batch {batch_idx + 1}/{n_batches} (pages {start}-{end - 1})"
         logger.info("Building messages for %s", batch_label)
 
-        messages = build_messages(batch_pages, enable_animations=args.enable_animations, prompt_lang=args.prompt_lang)
+        messages = build_messages(
+            batch_pages, enable_animations=args.enable_animations, prompt_lang=args.prompt_lang, provider=provider
+        )
 
         if batch_idx == 0:
             store.save_messages(messages)
-            store.save_system_prompt(messages[0]["content"])
-            store.save_tools([WRITE_SLIDE_XML_TOOL])
+            sys_prompt_text = get_system_prompt_text(args.enable_animations, args.prompt_lang)
+            store.save_system_prompt(sys_prompt_text)
+            tools_to_save = [WRITE_SLIDE_XML_TOOL_ANTHROPIC] if provider == "anthropic" else [WRITE_SLIDE_XML_TOOL]
+            store.save_tools(tools_to_save)
 
         token_est = estimate_tokens(messages, model=args.model_name, reasoning_effort=args.reasoning_effort)
         if batch_idx == 0:
@@ -203,17 +249,31 @@ def main() -> None:
         )
 
         stream_log = os.path.join(store.root, f"stream_batch{batch_idx}.log")
-        logger.info("Calling LLM API for %s", batch_label)
+        logger.info("Calling LLM API for %s (%s)", batch_label, provider)
         t_api_start = time.time()
-        result = call_llm(
-            messages=messages,
-            api_base_url=args.api_base_url,
-            api_key=args.api_key,
-            model_name=args.model_name,
-            stream_log_path=stream_log,
-            reasoning_effort=args.reasoning_effort,
-            estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
-        )
+
+        if provider == "anthropic":
+            sys_prompt_text = get_system_prompt_text(args.enable_animations, args.prompt_lang)
+            result = call_anthropic(
+                messages=messages,
+                system_prompt=sys_prompt_text,
+                api_key=args.api_key,
+                api_base_url=args.api_base_url,
+                model_name=args.model_name,
+                stream_log_path=stream_log,
+                reasoning_effort=args.reasoning_effort,
+                estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+            )
+        else:
+            result = call_llm(
+                messages=messages,
+                api_base_url=args.api_base_url,
+                api_key=args.api_key,
+                model_name=args.model_name,
+                stream_log_path=stream_log,
+                reasoning_effort=args.reasoning_effort,
+                estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
+            )
         t_api_total += time.time() - t_api_start
 
         store.save_api_response(result.response_data)
@@ -277,6 +337,7 @@ def main() -> None:
         "pdf_path": os.path.abspath(args.pdf),
         "output_pptx": os.path.abspath(args.output),
         "pdf_pages": n_pages,
+        "api_provider": provider,
         "dpi": args.dpi,
         "enable_animations": args.enable_animations,
         "model": args.model_name,

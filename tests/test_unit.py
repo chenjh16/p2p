@@ -426,6 +426,20 @@ class TestSystemPrompt:
         assert "slide_xml" in params["properties"]
         assert params["required"] == ["page_num", "slide_xml"]
 
+    def test_anthropic_tool_definition_structure(self):
+        from src.system_prompt import WRITE_SLIDE_XML_TOOL_ANTHROPIC
+
+        assert "name" in WRITE_SLIDE_XML_TOOL_ANTHROPIC
+        assert WRITE_SLIDE_XML_TOOL_ANTHROPIC["name"] == "write_slide_xml"
+        assert "description" in WRITE_SLIDE_XML_TOOL_ANTHROPIC
+        assert "input_schema" in WRITE_SLIDE_XML_TOOL_ANTHROPIC
+        schema = WRITE_SLIDE_XML_TOOL_ANTHROPIC["input_schema"]
+        assert "properties" in schema
+        assert "page_num" in schema["properties"]
+        assert "slide_xml" in schema["properties"]
+        assert "required" in schema
+        assert schema["required"] == ["page_num", "slide_xml"]
+
     def test_font_calibration_in_prompt(self):
         from src.system_prompt import get_system_prompt
 
@@ -662,6 +676,93 @@ class TestPPTXAssembler:
 
         prs = Presentation(output)
         assert len(prs.slides) == 1
+
+
+# ---------------------------------------------------------------------------
+# message_builder (Anthropic)
+# ---------------------------------------------------------------------------
+
+
+class TestMessageBuilderAnthropic:
+    """Tests for Anthropic-specific message building."""
+
+    def test_anthropic_messages_no_system_role(self, sample_pdf):
+        from src.message_builder import build_messages
+        from src.pdf_preprocessor import pdf_to_images
+
+        pages = pdf_to_images(sample_pdf, dpi=72)
+        messages = build_messages(pages, provider="anthropic")
+
+        for msg in messages:
+            assert msg["role"] != "system", "Anthropic uses a separate system parameter, not system role in messages"
+
+    def test_anthropic_messages_use_image_blocks(self, sample_pdf):
+        from src.message_builder import build_messages
+        from src.pdf_preprocessor import pdf_to_images
+
+        pages = pdf_to_images(sample_pdf, dpi=72)
+        messages = build_messages(pages, provider="anthropic")
+
+        user_content = messages[0]["content"]
+        image_blocks = [p for p in user_content if p.get("type") == "image"]
+        assert len(image_blocks) == 2
+        for block in image_blocks:
+            assert "source" in block
+            assert block["source"].get("type") == "base64"
+
+    def test_anthropic_task_instruction_present(self, sample_pdf):
+        from src.message_builder import build_messages
+        from src.pdf_preprocessor import pdf_to_images
+
+        pages = pdf_to_images(sample_pdf, dpi=72)
+        messages = build_messages(pages, provider="anthropic")
+
+        user_content = messages[0]["content"]
+        text_blocks = [p for p in user_content if p.get("type") == "text"]
+        last_text = text_blocks[-1]
+        assert "CRITICAL" in last_text["text"]
+        assert "parallel tool calls" in last_text["text"]
+
+    def test_get_system_prompt_text(self):
+        from src.message_builder import get_system_prompt_text
+
+        prompt = get_system_prompt_text(enable_animations=False, prompt_lang="en")
+        assert "presentation reconstruction engine" in prompt
+        assert "write_slide_xml" in prompt
+
+    def test_get_system_prompt_text_with_animations(self):
+        from src.message_builder import get_system_prompt_text
+
+        prompt = get_system_prompt_text(enable_animations=True)
+        assert "Morph" in prompt
+
+
+# ---------------------------------------------------------------------------
+# api_client_anthropic (thinking budget)
+# ---------------------------------------------------------------------------
+
+
+class TestAnthropicThinkingBudget:
+    """Tests for _thinking_budget mapping in api_client_anthropic."""
+
+    def test_thinking_budget_mapping(self):
+        from src.api_client_anthropic import _thinking_budget
+
+        max_tokens = 128000
+        low = _thinking_budget("low", max_tokens)
+        medium = _thinking_budget("medium", max_tokens)
+        high = _thinking_budget("high", max_tokens)
+        xhigh = _thinking_budget("xhigh", max_tokens)
+        none_val = _thinking_budget("none", max_tokens)
+        empty_val = _thinking_budget("", max_tokens)
+
+        assert low == 0
+        assert medium > 0
+        assert high > medium
+        assert xhigh > high
+        assert xhigh == min(128000, max_tokens)
+        assert none_val == 0
+        assert empty_val == 0
 
 
 # ---------------------------------------------------------------------------

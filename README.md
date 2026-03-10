@@ -8,9 +8,9 @@
 
 **[English](#p2p--pdf-to-pptx-converter)** | **[中文](#p2p--pdf-转-pptx-转换器)**
 
-Convert PDF slide decks into editable Microsoft PowerPoint (PPTX) files using multimodal LLM (GPT-5.4).
+Convert PDF slide decks into editable Microsoft PowerPoint (PPTX) files using multimodal LLMs (GPT-5.4 / Claude Opus-4.6).
 
-The tool analyzes each slide image with GPT-5.4 and directly generates PresentationML (OOXML) XML, producing PowerPoint files with native vector elements — text boxes, shapes, tables, connectors, equations — rather than embedded raster images.
+The tool analyzes each slide image with the LLM and directly generates PresentationML (OOXML) XML, producing PowerPoint files with native vector elements — text boxes, shapes, tables, connectors, equations — rather than embedded raster images.
 
 ## Features
 
@@ -30,7 +30,7 @@ The tool analyzes each slide image with GPT-5.4 and directly generates Presentat
 ## Architecture
 
 ```
-PDF ──→ [PyMuPDF] ──→ Page Images ──→ [GPT-5.4 API] ──→ Slide XMLs ──→ [python-pptx] ──→ PPTX
+PDF ──→ [PyMuPDF] ──→ Page Images ──→ [LLM API] ──→ Slide XMLs ──→ [python-pptx] ──→ PPTX
                         (288 DPI)       (streaming)       (validated)      (assembled)
                                                               │
                                                               ▼
@@ -42,7 +42,7 @@ PDF ──→ [PyMuPDF] ──→ Page Images ──→ [GPT-5.4 API] ──→ 
 
 1. **PDF Preprocessing** — render each page to a high-resolution PNG image (default 288 DPI)
 2. **Message Building** — construct the OpenAI Chat Completions messages with system prompt, page images, and task instructions
-3. **LLM API Call** — stream GPT-5.4's response, extracting `write_slide_xml` tool calls with PresentationML XML for each page
+3. **LLM API Call** — stream the LLM's response, extracting `write_slide_xml` tool calls with PresentationML XML for each page
 4. **XML Validation** — parse, validate, and repair the generated XML (strip code fences, fix common errors, register relationships)
 5. **Aspect Ratio Detection** — detect page aspect ratio and snap to standard PowerPoint dimensions (16:9, 4:3, 16:10)
 6. **PPTX Assembly** — create a skeleton presentation and inject the validated slide XML into each slide
@@ -79,6 +79,12 @@ export OPENAI_API_KEY="sk-..."
 export OPENAI_MODEL_NAME="gpt-5.4"  # optional, defaults to gpt-5.4
 ```
 
+```bash
+# Or for Anthropic Claude
+export ANTHROPIC_API_KEY="sk-ant-..."
+export ANTHROPIC_MODEL_NAME="claude-opus-4-6"  # optional
+```
+
 ### 2. Convert a PDF
 
 ```bash
@@ -93,6 +99,9 @@ p2p slides.pdf --enable-animations
 
 # Chinese system prompt
 p2p slides.pdf --prompt-lang zh
+
+# Using Anthropic Claude
+p2p slides.pdf --api-provider anthropic
 ```
 
 ### 3. Dry-run (estimate cost without calling API)
@@ -126,8 +135,9 @@ DRY-RUN SUMMARY
 ## CLI Reference
 
 ```
-usage: p2p [-h] [-o OUTPUT] [--api-base-url URL] [--api-key KEY]
-           [--model-name MODEL] [--dpi DPI] [--enable-animations]
+usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
+           [--api-base-url URL] [--api-key KEY] [--model-name MODEL]
+           [--dpi DPI] [--enable-animations]
            [--reasoning-effort {low,medium,high,xhigh}]
            [--prompt-lang {en,zh}] [--batch-size N]
            [--skip-postprocess] [--dry-run]
@@ -139,9 +149,10 @@ usage: p2p [-h] [-o OUTPUT] [--api-base-url URL] [--api-key KEY]
 |---|---|---|---|
 | `pdf` | — | *(required)* | Input PDF file path |
 | `-o`, `--output` | — | `<basename>.pptx` | Output PPTX file path |
-| `--api-base-url` | `OPENAI_BASE_URL` | `""` | OpenAI-compatible API base URL |
-| `--api-key` | `OPENAI_API_KEY` | `""` | API key |
-| `--model-name` | `OPENAI_MODEL_NAME` | `gpt-5.4` | Model name |
+| `--api-provider` | — | `openai` | API provider: `openai` or `anthropic` |
+| `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_API_URL` | `""` | API base URL |
+| `--api-key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | `""` | API key |
+| `--model-name` | `OPENAI_MODEL_NAME` / `ANTHROPIC_MODEL_NAME` | `gpt-5.4` | Model name |
 | `--dpi` | — | `288` | Rendering DPI for LLM input images |
 | `--enable-animations` | — | `off` | Enable Morph transitions and animations |
 | `--reasoning-effort` | — | `medium` | Model reasoning effort (low/medium/high/xhigh) |
@@ -164,7 +175,7 @@ run-slides-20260309-143052/
 │   └── ...
 ├── messages.json                # API messages (base64 replaced with file paths)
 ├── messages_full.json           # API messages (complete with base64)
-├── system_prompt.txt            # System prompt sent to the model
+├── system_prompt.md             # System prompt sent to the model
 ├── tools.json                   # Tool definitions
 ├── token_estimate.json          # Token count and cost estimate
 ├── api_response.json            # API response metadata and usage stats
@@ -186,7 +197,7 @@ Dry-run directories use the `dry-run-` prefix and contain only pre-API artifacts
 
 ### System Prompt Design
 
-The system prompt instructs GPT-5.4 to act as a "presentation reconstruction engine" that converts slide images into OOXML PresentationML XML. Key principles:
+The system prompt instructs the LLM to act as a "presentation reconstruction engine" that converts slide images into OOXML PresentationML XML. Key principles:
 
 1. **Vector First** — maximize native PowerPoint elements (text boxes, shapes, tables, connectors, groups)
 2. **Raster Placeholder (Last Resort)** — only for photographs and complex artistic illustrations
@@ -229,6 +240,7 @@ p2p/
 │   ├── message_builder.py       # OpenAI messages array construction
 │   ├── token_estimator.py       # Token counting and cost estimation
 │   ├── api_client.py            # Streaming LLM API client
+│   ├── api_client_anthropic.py  # Anthropic streaming LLM API client
 │   ├── xml_validator.py         # XML validation and repair
 │   ├── pptx_assembler.py        # PPTX file assembly from slide XMLs
 │   ├── postprocessor.py         # Raster placeholder replacement
@@ -303,6 +315,7 @@ The test suite includes:
 | `PyMuPDF` | PDF rendering to images |
 | `Pillow` | Image processing |
 | `openai` | OpenAI API client (streaming, tool calling) |
+| `anthropic` | Anthropic API client (streaming, tool use) |
 | `lxml` | XML parsing, validation, and manipulation |
 | `tiktoken` | Token counting for cost estimation |
 | `rich` | Colored, structured console logging |
@@ -323,9 +336,9 @@ This project is licensed under the [MIT License](LICENSE).
 
 **[English](#p2p--pdf-to-pptx-converter)** | **[中文](#p2p--pdf-转-pptx-转换器)**
 
-使用多模态大语言模型（GPT-5.4）将 PDF 幻灯片转换为可编辑的 Microsoft PowerPoint（PPTX）文件。
+使用多模态大语言模型（GPT-5.4 / Claude Opus-4.6）将 PDF 幻灯片转换为可编辑的 Microsoft PowerPoint（PPTX）文件。
 
-该工具使用 GPT-5.4 分析每页幻灯片图像，直接生成 PresentationML（OOXML）XML，产出包含原生矢量元素（文本框、形状、表格、连接线、公式等）的 PowerPoint 文件，而非嵌入光栅图像。
+该工具使用 LLM 分析每页幻灯片图像，直接生成 PresentationML（OOXML）XML，产出包含原生矢量元素（文本框、形状、表格、连接线、公式等）的 PowerPoint 文件，而非嵌入光栅图像。
 
 ## 功能特性
 
@@ -345,7 +358,7 @@ This project is licensed under the [MIT License](LICENSE).
 ## 架构
 
 ```
-PDF ──→ [PyMuPDF] ──→ 页面图像 ──→ [GPT-5.4 API] ──→ 幻灯片 XML ──→ [python-pptx] ──→ PPTX
+PDF ──→ [PyMuPDF] ──→ 页面图像 ──→ [LLM API] ──→ 幻灯片 XML ──→ [python-pptx] ──→ PPTX
                        (288 DPI)      (流式输出)        (已验证)         (已组装)
                                                             │
                                                             ▼
@@ -357,7 +370,7 @@ PDF ──→ [PyMuPDF] ──→ 页面图像 ──→ [GPT-5.4 API] ──→
 
 1. **PDF 预处理** — 将每页渲染为高分辨率 PNG 图像（默认 288 DPI）
 2. **消息构建** — 构建包含系统提示词、页面图像和任务指令的 OpenAI Chat Completions 消息
-3. **LLM API 调用** — 流式接收 GPT-5.4 的响应，提取每页的 `write_slide_xml` 工具调用及 PresentationML XML
+3. **LLM API 调用** — 流式接收 LLM 的响应，提取每页的 `write_slide_xml` 工具调用及 PresentationML XML
 4. **XML 验证** — 解析、验证并修复生成的 XML（去除代码围栏、修复常见错误、注册关系）
 5. **宽高比检测** — 检测页面宽高比并对齐到标准 PowerPoint 尺寸（16:9、4:3、16:10）
 6. **PPTX 组装** — 创建骨架演示文稿并将验证后的幻灯片 XML 注入每页
@@ -394,6 +407,12 @@ export OPENAI_API_KEY="sk-..."
 export OPENAI_MODEL_NAME="gpt-5.4"  # 可选，默认为 gpt-5.4
 ```
 
+```bash
+# 或使用 Anthropic Claude
+export ANTHROPIC_API_KEY="sk-ant-..."
+export ANTHROPIC_MODEL_NAME="claude-opus-4-6"  # 可选
+```
+
 ### 2. 转换 PDF
 
 ```bash
@@ -408,6 +427,9 @@ p2p slides.pdf --enable-animations
 
 # 使用中文系统提示词
 p2p slides.pdf --prompt-lang zh
+
+# 使用 Anthropic Claude
+p2p slides.pdf --api-provider anthropic
 ```
 
 ### 3. 试运行（估算成本，不调用 API）
@@ -441,8 +463,9 @@ DRY-RUN SUMMARY
 ## 命令行参数
 
 ```
-用法: p2p [-h] [-o OUTPUT] [--api-base-url URL] [--api-key KEY]
-          [--model-name MODEL] [--dpi DPI] [--enable-animations]
+用法: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
+          [--api-base-url URL] [--api-key KEY] [--model-name MODEL]
+          [--dpi DPI] [--enable-animations]
           [--reasoning-effort {low,medium,high,xhigh}]
           [--prompt-lang {en,zh}] [--batch-size N]
           [--skip-postprocess] [--dry-run]
@@ -454,9 +477,10 @@ DRY-RUN SUMMARY
 |---|---|---|---|
 | `pdf` | — | *（必填）* | 输入 PDF 文件路径 |
 | `-o`, `--output` | — | `<文件名>.pptx` | 输出 PPTX 文件路径 |
-| `--api-base-url` | `OPENAI_BASE_URL` | `""` | OpenAI 兼容 API 基础 URL |
-| `--api-key` | `OPENAI_API_KEY` | `""` | API 密钥 |
-| `--model-name` | `OPENAI_MODEL_NAME` | `gpt-5.4` | 模型名称 |
+| `--api-provider` | — | `openai` | API 提供商：`openai` 或 `anthropic` |
+| `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_API_URL` | `""` | API 基础 URL |
+| `--api-key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | `""` | API 密钥 |
+| `--model-name` | `OPENAI_MODEL_NAME` / `ANTHROPIC_MODEL_NAME` | `gpt-5.4` | 模型名称 |
 | `--dpi` | — | `288` | LLM 输入图像的渲染 DPI |
 | `--enable-animations` | — | `关闭` | 启用 Morph 转场和动画 |
 | `--reasoning-effort` | — | `medium` | 模型推理强度（low/medium/high/xhigh） |
@@ -479,7 +503,7 @@ run-slides-20260309-143052/
 │   └── ...
 ├── messages.json                # API 消息（base64 替换为文件路径）
 ├── messages_full.json           # API 消息（包含完整 base64）
-├── system_prompt.txt            # 发送给模型的系统提示词
+├── system_prompt.md             # 发送给模型的系统提示词
 ├── tools.json                   # 工具定义
 ├── token_estimate.json          # Token 计数和成本估算
 ├── api_response.json            # API 响应元数据和使用统计
@@ -501,7 +525,7 @@ run-slides-20260309-143052/
 
 ### 系统提示词设计
 
-系统提示词指导 GPT-5.4 作为"演示文稿重建引擎"，将幻灯片图像转换为 OOXML PresentationML XML。核心原则：
+系统提示词指导 LLM 作为"演示文稿重建引擎"，将幻灯片图像转换为 OOXML PresentationML XML。核心原则：
 
 1. **矢量优先** — 最大化使用原生 PowerPoint 元素（文本框、形状、表格、连接线、组合）
 2. **光栅占位（最后手段）** — 仅用于照片和复杂艺术插图
@@ -544,6 +568,7 @@ p2p/
 │   ├── message_builder.py       # OpenAI 消息数组构建
 │   ├── token_estimator.py       # Token 计数和成本估算
 │   ├── api_client.py            # 流式 LLM API 客户端
+│   ├── api_client_anthropic.py  # Anthropic 流式 LLM API 客户端
 │   ├── xml_validator.py         # XML 验证和修复
 │   ├── pptx_assembler.py        # 从幻灯片 XML 组装 PPTX 文件
 │   ├── postprocessor.py         # 光栅占位符替换
@@ -618,6 +643,7 @@ python -m pytest tests/ -v
 | `PyMuPDF` | PDF 渲染为图像 |
 | `Pillow` | 图像处理 |
 | `openai` | OpenAI API 客户端（流式、工具调用） |
+| `anthropic` | Anthropic API 客户端（流式、工具调用） |
 | `lxml` | XML 解析、验证和操作 |
 | `tiktoken` | Token 计数（成本估算） |
 | `rich` | 彩色结构化控制台日志 |

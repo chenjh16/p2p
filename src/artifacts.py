@@ -46,8 +46,8 @@ class ArtifactStore:
         logger.info("Saved messages (light + full)")
 
     def save_system_prompt(self, prompt: str) -> None:
-        """Write the system prompt to a text file."""
-        with open(os.path.join(self.root, "system_prompt.txt"), "w", encoding="utf-8") as f:
+        """Write the system prompt to a markdown file."""
+        with open(os.path.join(self.root, "system_prompt.md"), "w", encoding="utf-8") as f:
             f.write(prompt)
 
     def save_tools(self, tools: list[dict]) -> None:

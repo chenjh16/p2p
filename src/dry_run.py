@@ -8,9 +8,9 @@ from datetime import UTC, datetime
 
 from .artifacts import ArtifactStore
 from .logging_config import get_logger
-from .message_builder import build_messages
+from .message_builder import build_messages, get_system_prompt_text
 from .pdf_preprocessor import pdf_to_images
-from .system_prompt import WRITE_SLIDE_XML_TOOL
+from .system_prompt import WRITE_SLIDE_XML_TOOL, WRITE_SLIDE_XML_TOOL_ANTHROPIC
 from .token_estimator import estimate_tokens
 
 logger = get_logger("dry_run")
@@ -21,18 +21,22 @@ def run_dry(
     dpi: int,
     enable_animations: bool,
     model_name: str,
-    batch_size: int,
+    max_pages: int = 5,
+    batch_size: int = 5,
     prompt_lang: str = "en",
     reasoning_effort: str = "medium",
+    provider: str = "openai",
 ) -> str:
     """Execute dry-run: prepare everything before the API call and export artifacts."""
     store = ArtifactStore(pdf_path=pdf_path, dry_run=True)
 
     store.save_run_params({
         "pdf": os.path.abspath(pdf_path),
+        "api_provider": provider,
         "dpi": dpi,
         "enable_animations": enable_animations,
         "model_name": model_name,
+        "max_pages": max_pages,
         "batch_size": batch_size,
         "prompt_lang": prompt_lang,
         "reasoning_effort": reasoning_effort,
@@ -41,14 +45,17 @@ def run_dry(
 
     # Step 1: PDF preprocessing
     pages = pdf_to_images(pdf_path, dpi=dpi)
+    pages = pages[:max_pages]
     store.save_page_images(pages)
 
     # Step 2: Build messages
     logger.info("Building messages...")
-    messages = build_messages(pages, enable_animations=enable_animations, prompt_lang=prompt_lang)
+    messages = build_messages(pages, enable_animations=enable_animations, prompt_lang=prompt_lang, provider=provider)
     store.save_messages(messages)
-    store.save_system_prompt(messages[0]["content"])
-    store.save_tools([WRITE_SLIDE_XML_TOOL])
+    sys_prompt_text = get_system_prompt_text(enable_animations, prompt_lang)
+    store.save_system_prompt(sys_prompt_text)
+    tools_to_save = [WRITE_SLIDE_XML_TOOL_ANTHROPIC] if provider == "anthropic" else [WRITE_SLIDE_XML_TOOL]
+    store.save_tools(tools_to_save)
 
     # Step 3: Token estimation
     logger.info("Estimating tokens...")
@@ -60,6 +67,7 @@ def run_dry(
         "timestamp": datetime.now(UTC).isoformat(),
         "pdf_path": os.path.abspath(pdf_path),
         "pdf_pages": len(pages),
+        "api_provider": provider,
         "dpi": dpi,
         "enable_animations": enable_animations,
         "model": model_name,
