@@ -55,7 +55,7 @@ def snap_slide_dimensions(width_pt: float, height_pt: float) -> tuple[float, flo
 
 
 def pdf_to_images(
-    pdf_path: str, dpi: int = 288
+    pdf_path: str, dpi: int = 192
 ) -> list[tuple[bytes, dict]]:
     """Render each PDF page to a high-resolution PNG image.
 

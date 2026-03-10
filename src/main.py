@@ -8,6 +8,22 @@ import sys
 import time
 
 
+def _parse_page_spec(spec: str) -> list[int]:
+    """Parse a page specification string like '0,2,5-8' into a sorted list of page indices."""
+    pages: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_s, end_s = part.split("-", 1)
+            start, end = int(start_s.strip()), int(end_s.strip())
+            pages.update(range(start, end + 1))
+        else:
+            pages.add(int(part))
+    return sorted(pages)
+
+
 def main() -> None:
     """Parse CLI args and run the full conversion or dry-run pipeline."""
     parser = argparse.ArgumentParser(
@@ -44,7 +60,11 @@ def main() -> None:
 
     # Processing options
     parser.add_argument(
-        "--dpi", type=int, default=288, help="Rendering DPI for LLM input (default: 288)"
+        "--dpi",
+        type=int,
+        default=192,
+        choices=[96, 144, 192, 288],
+        help="Rendering DPI for LLM input: 96 (draft), 144 (standard), 192 (high, default), 288 (ultra)",
     )
     parser.add_argument(
         "--enable-animations",
@@ -67,13 +87,19 @@ def main() -> None:
         "--max-pages",
         type=int,
         default=5,
-        help="Maximum number of pages to convert (default: 5)",
+        help="Maximum number of pages to convert (0=all, default: 5)",
+    )
+    parser.add_argument(
+        "--pages",
+        type=str,
+        default="",
+        help="Specific pages to convert, e.g. '0,2,5-8' (mutually exclusive with --max-pages)",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=5,
-        help="Batch size for large documents (default: 5)",
+        default=0,
+        help="Batch size (0=auto based on gateway timeout, default: 0)",
     )
     parser.add_argument(
         "--skip-postprocess",
@@ -86,6 +112,12 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="Dry-run: prepare everything but don't call the API",
+    )
+    parser.add_argument(
+        "--replay",
+        type=str,
+        default="",
+        help="Replay a previous run/dry-run from its artifact directory (e.g. runs/run-example1-20260310-123615)",
     )
     parser.add_argument(
         "--log-level",
@@ -120,6 +152,17 @@ def main() -> None:
         else:
             args.model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-5.4")
 
+    # --- Replay mode ---
+    if args.replay:
+        from .replay import run_replay
+
+        run_replay(args.replay)
+        return
+
+    # When --pages is specified, ignore --max-pages
+    if args.pages:
+        args.max_pages = 0
+
     # Validate input
     if not os.path.isfile(args.pdf):
         logger.error("Input file not found: %s", args.pdf)
@@ -146,6 +189,7 @@ def main() -> None:
     if args.dry_run:
         from .dry_run import run_dry
 
+        page_indices = _parse_page_spec(args.pages) if args.pages else None
         run_dry(
             pdf_path=args.pdf,
             dpi=args.dpi,
@@ -156,6 +200,7 @@ def main() -> None:
             prompt_lang=args.prompt_lang,
             reasoning_effort=args.reasoning_effort,
             provider=provider,
+            page_indices=page_indices,
         )
         return
 
@@ -168,7 +213,7 @@ def main() -> None:
     from .postprocessor import postprocess_raster_fills
     from .pptx_assembler import PPTXAssembler
     from .system_prompt import WRITE_SLIDE_XML_TOOL, WRITE_SLIDE_XML_TOOL_ANTHROPIC
-    from .token_estimator import estimate_tokens
+    from .token_estimator import ASSUMED_OUTPUT_TPS, estimate_tokens, recommend_batch_size
 
     if provider == "anthropic":
         from .api_client_anthropic import call_anthropic
@@ -176,6 +221,16 @@ def main() -> None:
         from .api_client import call_llm
 
     store = ArtifactStore(pdf_path=args.pdf)
+    store.copy_input(args.pdf)
+
+    # Auto-calculate batch size if not specified (0 = auto)
+    if args.batch_size <= 0:
+        batch_size = recommend_batch_size(reasoning_effort=args.reasoning_effort)
+        logger.info("Auto batch size: %d pages (gateway timeout 600s, reasoning=%s)", batch_size, args.reasoning_effort)
+    else:
+        batch_size = args.batch_size
+
+    page_indices = _parse_page_spec(args.pages) if args.pages else None
 
     store.save_run_params({
         "pdf": os.path.abspath(args.pdf),
@@ -188,18 +243,21 @@ def main() -> None:
         "reasoning_effort": args.reasoning_effort,
         "prompt_lang": args.prompt_lang,
         "max_pages": args.max_pages,
+        "pages": args.pages,
         "batch_size": args.batch_size,
         "skip_postprocess": args.skip_postprocess,
         "log_level": args.log_level,
     })
 
     # Step 1: PDF preprocessing
-    pages = pdf_to_images(args.pdf, dpi=args.dpi)
-    pages = pages[: args.max_pages]
+    all_pages = pdf_to_images(args.pdf, dpi=args.dpi)
+    if page_indices is not None:
+        pages = [p for p in all_pages if p[1]["page_num"] in page_indices]
+    elif args.max_pages > 0:
+        pages = all_pages[: args.max_pages]
+    else:
+        pages = all_pages
     store.save_page_images(pages)
-
-    # Step 2+3: Build messages and call LLM API, with batching for large PDFs
-    batch_size = args.batch_size
     overlap = 2
     n_pages = len(pages)
     slide_xmls: dict[int, str] = {}
@@ -219,6 +277,11 @@ def main() -> None:
     n_batches = len(batches)
     logger.info("Processing %d pages in %d batch(es)", n_pages, n_batches)
 
+    total_input_tokens = 0
+    total_output_tokens_est = 0
+    total_est_response_seconds = 0.0
+    batch_token_estimates: list[dict] = []
+
     for batch_idx, (start, end) in enumerate(batches):
         batch_pages = pages[start:end]
         batch_label = f"batch {batch_idx + 1}/{n_batches} (pages {start}-{end - 1})"
@@ -235,7 +298,12 @@ def main() -> None:
             tools_to_save = [WRITE_SLIDE_XML_TOOL_ANTHROPIC] if provider == "anthropic" else [WRITE_SLIDE_XML_TOOL]
             store.save_tools(tools_to_save)
 
-        token_est = estimate_tokens(messages, model=args.model_name, reasoning_effort=args.reasoning_effort)
+        token_est = estimate_tokens(messages, model=args.model_name, reasoning_effort=args.reasoning_effort, dpi=args.dpi)
+        batch_token_estimates.append(token_est)
+        total_input_tokens += token_est["total_input_tokens"]
+        total_output_tokens_est += token_est["estimated_output_tokens"]
+        total_est_response_seconds += token_est["estimated_response_time_seconds"]
+
         if batch_idx == 0:
             store.save_token_estimate(token_est)
 
@@ -303,7 +371,7 @@ def main() -> None:
     logger.info("Total slide XMLs collected: %d", len(slide_xmls))
     store.save_slide_xmls(slide_xmls)
 
-    # Step 4: Assemble PPTX (snap to standard aspect ratio)
+    # Step 2: Assemble PPTX (snap to standard aspect ratio)
     raw_w = pages[0][1]["width_pt"]
     raw_h = pages[0][1]["height_pt"]
     snap_w, snap_h, ratio_label = snap_slide_dimensions(raw_w, raw_h)
@@ -321,7 +389,7 @@ def main() -> None:
         intermediate = args.output + ".tmp"
         assembler.save(intermediate)
 
-        # Step 5: Post-process raster fills
+        # Step 3: Post-process raster fills
         postprocess_raster_fills(
             pptx_path=intermediate,
             pdf_path=args.pdf,
@@ -334,26 +402,44 @@ def main() -> None:
 
     # Save run metadata
     store.save_metadata({
-        "pdf_path": os.path.abspath(args.pdf),
-        "output_pptx": os.path.abspath(args.output),
+        "runtime_params": {
+            "pdf_path": os.path.abspath(args.pdf),
+            "output_pptx": os.path.abspath(args.output),
+            "api_provider": provider,
+            "api_base_url": args.api_base_url,
+            "model": args.model_name,
+            "dpi": args.dpi,
+            "enable_animations": args.enable_animations,
+            "reasoning_effort": args.reasoning_effort,
+            "prompt_lang": args.prompt_lang,
+            "max_pages": args.max_pages,
+            "pages": args.pages,
+            "page_indices": page_indices,
+            "batch_size": batch_size,
+            "batch_size_requested": args.batch_size,
+            "batch_size_auto": args.batch_size <= 0,
+            "recommended_batch_size": recommend_batch_size(reasoning_effort=args.reasoning_effort),
+            "gateway_timeout_seconds": 600,
+            "skip_postprocess": args.skip_postprocess,
+        },
         "pdf_pages": n_pages,
-        "api_provider": provider,
-        "dpi": args.dpi,
-        "enable_animations": args.enable_animations,
-        "model": args.model_name,
-        "batch_size": batch_size,
         "batches": n_batches,
         "pdf_width_pt": raw_w,
         "pdf_height_pt": raw_h,
         "slide_width_pt": snap_w,
         "slide_height_pt": snap_h,
         "aspect_ratio": ratio_label,
-        "token_estimate": token_est,
-        "estimated_response_time_seconds": token_est["estimated_response_time_seconds"],
-        "assumed_output_tps": token_est["assumed_output_tps"],
+        "token_estimate_per_batch": batch_token_estimates,
+        "total_input_tokens": total_input_tokens,
+        "total_estimated_output_tokens": total_output_tokens_est,
+        "total_estimated_tokens": total_input_tokens + total_output_tokens_est,
+        "total_estimated_response_seconds": round(total_est_response_seconds, 1),
+        "assumed_output_tps": ASSUMED_OUTPUT_TPS,
         "api_elapsed_seconds": t_api_total,
         "slides_received": len(slide_xmls),
     })
+
+    store.copy_output(args.output)
 
     t_total = time.time() - t_start
     file_size = os.path.getsize(args.output) / (1024 * 1024)

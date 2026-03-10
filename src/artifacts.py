@@ -4,21 +4,41 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import datetime
 
 from .logging_config import get_logger
 
 logger = get_logger("artifacts")
 
+RUNS_DIR = "runs"
+
 
 class ArtifactStore:
-    """Manages saving intermediate artifacts from the conversion pipeline."""
+    """Manages saving intermediate artifacts from the conversion pipeline.
 
-    def __init__(self, pdf_path: str, *, dry_run: bool = False):
+    All artifact directories are created under the ``runs/`` top-level folder
+    so that a single .gitignore entry covers every past run.
+    """
+
+    def __init__(self, pdf_path: str, *, dry_run: bool = False, replay_of: str = ""):
+        """Create a timestamped artifact directory under ``runs/``.
+
+        Args:
+            pdf_path: Path to the input PDF (used to derive the directory name).
+            dry_run: If True, prefix the directory with ``dry-run-``.
+            replay_of: If non-empty, prefix with ``replay-`` (value is the
+                source directory being replayed).
+        """
         base = os.path.splitext(os.path.basename(pdf_path))[0]
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        prefix = "dry-run" if dry_run else "run"
-        self.root = f"{prefix}-{base}-{timestamp}"
+        if replay_of:
+            prefix = "replay"
+        elif dry_run:
+            prefix = "dry-run"
+        else:
+            prefix = "run"
+        self.root = os.path.join(RUNS_DIR, f"{prefix}-{base}-{timestamp}")
         self.pages_dir = os.path.join(self.root, "pages")
         self.slides_dir = os.path.join(self.root, "slides")
         os.makedirs(self.pages_dir, exist_ok=True)
@@ -37,7 +57,14 @@ class ArtifactStore:
         logger.info("Saved %d page images", len(pages))
 
     def save_messages(self, messages: list[dict], pages_dir: str | None = None) -> None:
-        """Save messages to JSON (light and full variants)."""
+        """Save messages to JSON (light variant with paths, full with base64).
+
+        Args:
+            messages: The assembled message list for the API call.
+            pages_dir: Directory containing page images, used to replace base64
+                data with file paths in the light variant. Defaults to
+                ``self.pages_dir``.
+        """
         light = _strip_base64(messages, pages_dir or self.pages_dir)
         with open(os.path.join(self.root, "messages.json"), "w", encoding="utf-8") as f:
             json.dump(light, f, ensure_ascii=False, indent=2)
@@ -127,9 +154,26 @@ class ArtifactStore:
             f.write(content_text)
         logger.info("Saved content text (%d chars) → %s", len(content_text), os.path.basename(path))
 
+    def copy_input(self, pdf_path: str) -> None:
+        """Copy the source PDF into the artifact directory for reproducibility."""
+        dest = os.path.join(self.root, os.path.basename(pdf_path))
+        shutil.copy2(pdf_path, dest)
+        logger.info("Copied input PDF → %s", os.path.basename(dest))
+
+    def copy_output(self, pptx_path: str) -> None:
+        """Copy the generated PPTX into the artifact directory."""
+        if not os.path.isfile(pptx_path):
+            return
+        dest = os.path.join(self.root, os.path.basename(pptx_path))
+        shutil.copy2(pptx_path, dest)
+        logger.info("Copied output PPTX → %s", os.path.basename(dest))
+
 
 def _strip_base64(messages: list[dict], pages_dir: str) -> list[dict]:
-    """Create a copy of messages with base64 images replaced by file paths."""
+    """Create a copy of messages with base64 images replaced by file paths.
+
+    Handles both OpenAI format (type: "image_url") and Anthropic format (type: "image").
+    """
     import copy
 
     result = copy.deepcopy(messages)
@@ -139,9 +183,11 @@ def _strip_base64(messages: list[dict], pages_dir: str) -> list[dict]:
         if not isinstance(content, list):
             continue
         for part in content:
+            page_path = os.path.join(pages_dir, f"page_{img_idx:03d}.png")
             if part.get("type") == "image_url":
-                part["image_url"]["url"] = os.path.join(
-                    pages_dir, f"page_{img_idx:03d}.png"
-                )
+                part["image_url"]["url"] = page_path
+                img_idx += 1
+            elif part.get("type") == "image" and isinstance(part.get("source"), dict):
+                part["source"] = {"type": "file", "path": page_path}
                 img_idx += 1
     return result

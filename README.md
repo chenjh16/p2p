@@ -31,7 +31,7 @@ The tool analyzes each slide image with the LLM and directly generates Presentat
 
 ```
 PDF ──→ [PyMuPDF] ──→ Page Images ──→ [LLM API] ──→ Slide XMLs ──→ [python-pptx] ──→ PPTX
-                        (288 DPI)       (streaming)       (validated)      (assembled)
+                        (192 DPI)       (streaming)       (validated)      (assembled)
                                                               │
                                                               ▼
                                                      [Post-processor]
@@ -40,7 +40,7 @@ PDF ──→ [PyMuPDF] ──→ Page Images ──→ [LLM API] ──→ Slid
 
 **Pipeline stages:**
 
-1. **PDF Preprocessing** — render each page to a high-resolution PNG image (default 288 DPI)
+1. **PDF Preprocessing** — render each page to a high-resolution PNG image (default 192 DPI)
 2. **Message Building** — construct the OpenAI Chat Completions messages with system prompt, page images, and task instructions
 3. **LLM API Call** — stream the LLM's response, extracting `write_slide_xml` tool calls with PresentationML XML for each page
 4. **XML Validation** — parse, validate, and repair the generated XML (strip code fences, fix common errors, register relationships)
@@ -118,18 +118,33 @@ DRY-RUN SUMMARY
   PDF:              slides.pdf
   Pages:            14
   Slide size:       720pt × 405pt
-  DPI:              288
+  DPI:              192
   Model:            gpt-5.4
-  Batches:          1
+  Batch size:       4 (auto)
+  Batches:          4
 ------------------------------------------------------------
-  Text tokens:      3,200
-  Image tokens:     72,800 (14 images)
-  Total input:      76,000 tokens
-  Est. output:      56,000 tokens
-  Est. cost:        $1.0300
+  Per-batch estimate:
+    Text tokens:    3,200
+    Image tokens:   5,200 (4 images)
+    Input tokens:   8,400
+    Output tokens:  ~16,000
+    Response time:  ~800s (~13.3 min)
+  Total estimate (4 batches):
+    Input tokens:   33,600
+    Output tokens:  ~64,000
+    Total tokens:   ~97,600
+    Response time:  ~3200s (~53.3 min)
+  Est. cost:        $0.6200
 ------------------------------------------------------------
-  Est. response:    ~1120s (~18.7 min) at 50 tok/s
+  Output TPS:       30 tok/s (reasoning=medium, ×1.5)
 ============================================================
+```
+
+### 4. Replay a previous run
+
+```bash
+# Re-run a previous conversion with the same parameters
+p2p dummy --replay runs/run-slides-20260309-143052
 ```
 
 ## CLI Reference
@@ -137,10 +152,11 @@ DRY-RUN SUMMARY
 ```
 usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
            [--api-base-url URL] [--api-key KEY] [--model-name MODEL]
-           [--dpi DPI] [--enable-animations]
+           [--dpi {96,144,192,288}] [--enable-animations]
            [--reasoning-effort {low,medium,high,xhigh}]
-           [--prompt-lang {en,zh}] [--batch-size N]
-           [--skip-postprocess] [--dry-run]
+           [--prompt-lang {en,zh}] [--max-pages N] [--pages SPEC]
+           [--batch-size N] [--skip-postprocess]
+           [--dry-run] [--replay DIR]
            [--log-level {DEBUG,INFO,WARNING,ERROR}]
            pdf
 ```
@@ -149,25 +165,39 @@ usage: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
 |---|---|---|---|
 | `pdf` | — | *(required)* | Input PDF file path |
 | `-o`, `--output` | — | `<basename>.pptx` | Output PPTX file path |
-| `--api-provider` | — | `openai` | API provider: `openai` or `anthropic` |
-| `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_API_URL` | `""` | API base URL |
+| `--api-provider` | `LLM_PROVIDER` | `openai` | API provider: `openai` or `anthropic` |
+| `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | `""` | API base URL |
 | `--api-key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | `""` | API key |
 | `--model-name` | `OPENAI_MODEL_NAME` / `ANTHROPIC_MODEL_NAME` | `gpt-5.4` | Model name |
-| `--dpi` | — | `288` | Rendering DPI for LLM input images |
+| `--dpi` | — | `192` | Rendering DPI for LLM input (96/144/192/288) |
 | `--enable-animations` | — | `off` | Enable Morph transitions and animations |
 | `--reasoning-effort` | — | `medium` | Model reasoning effort (low/medium/high/xhigh) |
 | `--prompt-lang` | — | `en` | System prompt language (en/zh) |
-| `--batch-size` | — | `25` | Pages per API call for large documents |
+| `--max-pages` | — | `5` | Max pages to convert (0=all); mutually exclusive with `--pages` |
+| `--pages` | — | `""` | Specific pages, e.g. `0,2,5-8`; mutually exclusive with `--max-pages` |
+| `--batch-size` | — | `0` (auto) | Pages per API call (0=auto based on gateway timeout) |
 | `--skip-postprocess` | — | `off` | Skip raster image post-processing |
 | `--dry-run` | — | `off` | Estimate tokens and cost without calling API |
+| `--replay` | — | `""` | Replay a previous run from its artifact directory |
 | `--log-level` | — | `INFO` | Logging verbosity |
 
 ## Artifact Directories
 
-Every run (including dry-runs) saves all intermediate artifacts to a timestamped directory:
+Every run (including dry-runs) saves all intermediate artifacts to a timestamped directory under `runs/`:
 
 ```
-run-slides-20260309-143052/
+runs/
+├── run-slides-20260309-143052/       # Full conversion
+├── dry-run-slides-20260309-142000/   # Dry-run
+└── replay-slides-20260310-100000/    # Replay of a previous run
+```
+
+Each directory contains:
+
+```
+runs/run-slides-20260309-143052/
+├── slides.pdf                   # Copy of input PDF (for reproducibility)
+├── slides.pptx                  # Copy of output PPTX
 ├── run_params.json              # CLI parameters used for this run
 ├── pages/
 │   ├── page_000.png             # Rendered page images
@@ -188,10 +218,10 @@ run-slides-20260309-143052/
 │   ├── slide_000.xml            # Generated PresentationML XML per slide
 │   ├── slide_001.xml
 │   └── ...
-└── metadata.json                # Run metadata (timing, counts, etc.)
+└── metadata.json                # Run metadata (timing, token totals, etc.)
 ```
 
-Dry-run directories use the `dry-run-` prefix and contain only pre-API artifacts.
+Dry-run directories use the `dry-run-` prefix and contain only pre-API artifacts. Replay directories use the `replay-` prefix and include a `replay_of` field in `metadata.json`.
 
 ## How It Works
 
@@ -222,7 +252,7 @@ The post-processor then:
 
 ### Batch Processing
 
-For large PDFs exceeding the batch size (default 25 pages):
+Batch size is auto-calculated based on a 600-second gateway timeout, the assumed output TPS (30 tok/s), and the reasoning effort multiplier. For large PDFs exceeding the batch size:
 - Pages are split into overlapping batches (2-page overlap)
 - Each batch is processed in a separate API call
 - When animations are enabled, the later batch's version of overlapping pages is preferred for better transition context
@@ -237,21 +267,23 @@ p2p/
 │   ├── main.py                  # CLI entry point and pipeline orchestration
 │   ├── system_prompt.py         # System prompts (EN/ZH) and tool definitions
 │   ├── pdf_preprocessor.py      # PDF → PNG rendering via PyMuPDF
-│   ├── message_builder.py       # OpenAI messages array construction
-│   ├── token_estimator.py       # Token counting and cost estimation
-│   ├── api_client.py            # Streaming LLM API client
+│   ├── message_builder.py       # OpenAI/Anthropic messages construction
+│   ├── token_estimator.py       # Token counting, cost estimation, batch sizing
+│   ├── api_client.py            # OpenAI streaming LLM API client
 │   ├── api_client_anthropic.py  # Anthropic streaming LLM API client
 │   ├── xml_validator.py         # XML validation and repair
 │   ├── pptx_assembler.py        # PPTX file assembly from slide XMLs
 │   ├── postprocessor.py         # Raster placeholder replacement
-│   ├── artifacts.py             # Artifact directory management
+│   ├── artifacts.py             # Artifact directory management (under runs/)
 │   ├── dry_run.py               # Dry-run mode implementation
+│   ├── replay.py                # Replay a previous run from saved parameters
 │   └── logging_config.py        # Rich-based logging configuration
 ├── tests/
-│   ├── test_e2e.py              # End-to-end tests with mock LLM server
+│   ├── test_e2e.py              # End-to-end tests with mock LLM servers
 │   └── test_unit.py             # Unit tests for all modules
 ├── docs/
 │   └── design.md                # Detailed design document (EN + ZH)
+├── Makefile                     # Development and conversion commands
 ├── pyproject.toml               # Project metadata and tool configuration
 ├── LICENSE                      # MIT License
 ├── .gitignore
@@ -285,18 +317,21 @@ python -m pytest tests/ -v
 The test suite includes:
 
 **End-to-end tests** (`test_e2e.py`):
-- **`test_dry_run`** — verifies dry-run artifact generation
-- **`test_e2e_conversion`** — full pipeline test with mock streaming server producing a valid 2-page PPTX
+- **`test_dry_run`** / **`test_dry_run_anthropic`** — verifies dry-run artifact generation (OpenAI and Anthropic)
+- **`test_e2e_conversion`** / **`test_e2e_anthropic_conversion`** — full pipeline with mock streaming servers producing valid PPTX
 - **`test_xml_validator`** — XML validation and repair logic
 
-**Unit tests** (`test_unit.py`) — 46 tests covering:
+**Unit tests** (`test_unit.py`) — 68 tests covering:
 - `TestPdfPreprocessor` — page rendering, PNG output, metadata, DPI scaling
+- `TestSnapSlideDimensions` — aspect ratio detection and snapping
 - `TestMessageBuilder` — message structure, animation toggle, image embedding, bilingual prompts, task instructions
-- `TestTokenEstimator` — text/image token counting, cost estimation, output scaling
+- `TestTokenEstimator` — text/image token counting, cost estimation, response time, model-aware image tokens
 - `TestXmlValidator` — valid XML passthrough, fence stripping, declaration injection, ampersand fixing, namespace repair, fallback slides
-- `TestSystemPrompt` — EN/ZH prompts, animation sections, tool definition, font calibration, table rules
-- `TestArtifactStore` — directory creation, dry-run prefix, image/params/reasoning/content/metadata saving, batch indexing
+- `TestSystemPrompt` — EN/ZH prompts, animation sections, tool definitions (OpenAI + Anthropic), font calibration, table rules
+- `TestArtifactStore` — directory creation, dry-run/replay prefixes, input copying, image/params/reasoning/content/metadata saving, batch indexing
 - `TestPPTXAssembler` — single/multi slide assembly, dimensions, hyperlink handling
+- `TestMessageBuilderAnthropic` — Anthropic message format, image blocks, system prompt extraction
+- `TestAnthropicThinkingBudget` — thinking budget mapping for reasoning effort
 - `TestLoggingConfig` — setup and logger creation
 
 ### Code Quality
@@ -359,7 +394,7 @@ This project is licensed under the [MIT License](LICENSE).
 
 ```
 PDF ──→ [PyMuPDF] ──→ 页面图像 ──→ [LLM API] ──→ 幻灯片 XML ──→ [python-pptx] ──→ PPTX
-                       (288 DPI)      (流式输出)        (已验证)         (已组装)
+                       (192 DPI)      (流式输出)        (已验证)         (已组装)
                                                             │
                                                             ▼
                                                      [后处理器]
@@ -368,7 +403,7 @@ PDF ──→ [PyMuPDF] ──→ 页面图像 ──→ [LLM API] ──→ 幻
 
 **处理流程：**
 
-1. **PDF 预处理** — 将每页渲染为高分辨率 PNG 图像（默认 288 DPI）
+1. **PDF 预处理** — 将每页渲染为高分辨率 PNG 图像（默认 192 DPI）
 2. **消息构建** — 构建包含系统提示词、页面图像和任务指令的 OpenAI Chat Completions 消息
 3. **LLM API 调用** — 流式接收 LLM 的响应，提取每页的 `write_slide_xml` 工具调用及 PresentationML XML
 4. **XML 验证** — 解析、验证并修复生成的 XML（去除代码围栏、修复常见错误、注册关系）
@@ -446,18 +481,33 @@ DRY-RUN SUMMARY
   PDF:              slides.pdf
   Pages:            14
   Slide size:       720pt × 405pt
-  DPI:              288
+  DPI:              192
   Model:            gpt-5.4
-  Batches:          1
+  Batch size:       4 (auto)
+  Batches:          4
 ------------------------------------------------------------
-  Text tokens:      3,200
-  Image tokens:     72,800 (14 images)
-  Total input:      76,000 tokens
-  Est. output:      56,000 tokens
-  Est. cost:        $1.0300
+  Per-batch estimate:
+    Text tokens:    3,200
+    Image tokens:   5,200 (4 images)
+    Input tokens:   8,400
+    Output tokens:  ~16,000
+    Response time:  ~800s (~13.3 min)
+  Total estimate (4 batches):
+    Input tokens:   33,600
+    Output tokens:  ~64,000
+    Total tokens:   ~97,600
+    Response time:  ~3200s (~53.3 min)
+  Est. cost:        $0.6200
 ------------------------------------------------------------
-  Est. response:    ~1120s (~18.7 min) at 50 tok/s
+  Output TPS:       30 tok/s (reasoning=medium, ×1.5)
 ============================================================
+```
+
+### 4. 重放之前的运行
+
+```bash
+# 使用相同参数重新运行之前的转换
+p2p dummy --replay runs/run-slides-20260309-143052
 ```
 
 ## 命令行参数
@@ -465,10 +515,11 @@ DRY-RUN SUMMARY
 ```
 用法: p2p [-h] [-o OUTPUT] [--api-provider {openai,anthropic}]
           [--api-base-url URL] [--api-key KEY] [--model-name MODEL]
-          [--dpi DPI] [--enable-animations]
+          [--dpi {96,144,192,288}] [--enable-animations]
           [--reasoning-effort {low,medium,high,xhigh}]
-          [--prompt-lang {en,zh}] [--batch-size N]
-          [--skip-postprocess] [--dry-run]
+          [--prompt-lang {en,zh}] [--max-pages N] [--pages SPEC]
+          [--batch-size N] [--skip-postprocess]
+          [--dry-run] [--replay DIR]
           [--log-level {DEBUG,INFO,WARNING,ERROR}]
           pdf
 ```
@@ -477,25 +528,39 @@ DRY-RUN SUMMARY
 |---|---|---|---|
 | `pdf` | — | *（必填）* | 输入 PDF 文件路径 |
 | `-o`, `--output` | — | `<文件名>.pptx` | 输出 PPTX 文件路径 |
-| `--api-provider` | — | `openai` | API 提供商：`openai` 或 `anthropic` |
-| `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_API_URL` | `""` | API 基础 URL |
+| `--api-provider` | `LLM_PROVIDER` | `openai` | API 提供商：`openai` 或 `anthropic` |
+| `--api-base-url` | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | `""` | API 基础 URL |
 | `--api-key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | `""` | API 密钥 |
 | `--model-name` | `OPENAI_MODEL_NAME` / `ANTHROPIC_MODEL_NAME` | `gpt-5.4` | 模型名称 |
-| `--dpi` | — | `288` | LLM 输入图像的渲染 DPI |
+| `--dpi` | — | `192` | LLM 输入图像的渲染 DPI（96/144/192/288） |
 | `--enable-animations` | — | `关闭` | 启用 Morph 转场和动画 |
 | `--reasoning-effort` | — | `medium` | 模型推理强度（low/medium/high/xhigh） |
 | `--prompt-lang` | — | `en` | 系统提示词语言（en/zh） |
-| `--batch-size` | — | `25` | 大文档每次 API 调用的页数 |
+| `--max-pages` | — | `5` | 最大转换页数（0=全部）；与 `--pages` 互斥 |
+| `--pages` | — | `""` | 指定页面，如 `0,2,5-8`；与 `--max-pages` 互斥 |
+| `--batch-size` | — | `0`（自动） | 每次 API 调用的页数（0=根据网关超时自动计算） |
 | `--skip-postprocess` | — | `关闭` | 跳过光栅图像后处理 |
 | `--dry-run` | — | `关闭` | 估算 token 和成本，不调用 API |
+| `--replay` | — | `""` | 从产物目录重放之前的运行 |
 | `--log-level` | — | `INFO` | 日志详细程度 |
 
 ## 产物目录
 
-每次运行（包括试运行）都会将所有中间产物保存到带时间戳的目录：
+每次运行（包括试运行）都会将所有中间产物保存到 `runs/` 下的带时间戳目录：
 
 ```
-run-slides-20260309-143052/
+runs/
+├── run-slides-20260309-143052/       # 完整转换
+├── dry-run-slides-20260309-142000/   # 试运行
+└── replay-slides-20260310-100000/    # 重放之前的运行
+```
+
+每个目录包含：
+
+```
+runs/run-slides-20260309-143052/
+├── slides.pdf                   # 输入 PDF 的副本（便于复现）
+├── slides.pptx                  # 输出 PPTX 的副本
 ├── run_params.json              # 本次运行的 CLI 参数
 ├── pages/
 │   ├── page_000.png             # 渲染的页面图像
@@ -516,10 +581,10 @@ run-slides-20260309-143052/
 │   ├── slide_000.xml            # 每页生成的 PresentationML XML
 │   ├── slide_001.xml
 │   └── ...
-└── metadata.json                # 运行元数据（耗时、计数等）
+└── metadata.json                # 运行元数据（耗时、token 总计等）
 ```
 
-试运行目录使用 `dry-run-` 前缀，仅包含 API 调用前的产物。
+试运行目录使用 `dry-run-` 前缀，仅包含 API 调用前的产物。重放目录使用 `replay-` 前缀，`metadata.json` 中包含 `replay_of` 字段。
 
 ## 工作原理
 
@@ -550,7 +615,7 @@ __LLMCLIP__:[x1, y1][x2, y2]
 
 ### 批量处理
 
-对于超过批次大小（默认 25 页）的大型 PDF：
+批次大小根据 600 秒网关超时、假设的输出速度（30 tok/s）和推理强度倍率自动计算。对于超过批次大小的大型 PDF：
 - 页面被分为有重叠的批次（2 页重叠）
 - 每个批次通过单独的 API 调用处理
 - 启用动画时，重叠页面优先使用后一批次的版本以获得更好的转场上下文
@@ -565,21 +630,23 @@ p2p/
 │   ├── main.py                  # CLI 入口和流程编排
 │   ├── system_prompt.py         # 系统提示词（中/英）和工具定义
 │   ├── pdf_preprocessor.py      # PDF → PNG 渲染（PyMuPDF）
-│   ├── message_builder.py       # OpenAI 消息数组构建
-│   ├── token_estimator.py       # Token 计数和成本估算
-│   ├── api_client.py            # 流式 LLM API 客户端
+│   ├── message_builder.py       # OpenAI/Anthropic 消息构建
+│   ├── token_estimator.py       # Token 计数、成本估算、批次大小计算
+│   ├── api_client.py            # OpenAI 流式 LLM API 客户端
 │   ├── api_client_anthropic.py  # Anthropic 流式 LLM API 客户端
 │   ├── xml_validator.py         # XML 验证和修复
 │   ├── pptx_assembler.py        # 从幻灯片 XML 组装 PPTX 文件
 │   ├── postprocessor.py         # 光栅占位符替换
-│   ├── artifacts.py             # 产物目录管理
+│   ├── artifacts.py             # 产物目录管理（runs/ 下）
 │   ├── dry_run.py               # 试运行模式实现
+│   ├── replay.py                # 从保存的参数重放之前的运行
 │   └── logging_config.py        # 基于 Rich 的日志配置
 ├── tests/
 │   ├── test_e2e.py              # 端到端测试（含模拟 LLM 服务器）
 │   └── test_unit.py             # 所有模块的单元测试
 ├── docs/
 │   └── design.md                # 详细设计文档（中英双语）
+├── Makefile                     # 开发和转换命令
 ├── pyproject.toml               # 项目元数据和工具配置
 ├── LICENSE                      # MIT 许可证
 ├── .gitignore
@@ -613,18 +680,21 @@ python -m pytest tests/ -v
 测试套件包括：
 
 **端到端测试**（`test_e2e.py`）：
-- **`test_dry_run`** — 验证试运行产物生成
-- **`test_e2e_conversion`** — 使用模拟流式服务器的完整流程测试，生成有效的 2 页 PPTX
+- **`test_dry_run`** / **`test_dry_run_anthropic`** — 验证试运行产物生成（OpenAI 和 Anthropic）
+- **`test_e2e_conversion`** / **`test_e2e_anthropic_conversion`** — 使用模拟流式服务器的完整流程测试
 - **`test_xml_validator`** — XML 验证和修复逻辑
 
-**单元测试**（`test_unit.py`）— 46 项测试覆盖：
+**单元测试**（`test_unit.py`）— 68 项测试覆盖：
 - `TestPdfPreprocessor` — 页面渲染、PNG 输出、元数据、DPI 缩放
+- `TestSnapSlideDimensions` — 宽高比检测和对齐
 - `TestMessageBuilder` — 消息结构、动画开关、图像嵌入、双语提示词、任务指令
-- `TestTokenEstimator` — 文本/图像 token 计数、成本估算、输出缩放
+- `TestTokenEstimator` — 文本/图像 token 计数、成本估算、响应时间、模型感知的图像 token
 - `TestXmlValidator` — 有效 XML 透传、围栏去除、声明注入、& 符号修复、命名空间修复、回退幻灯片
-- `TestSystemPrompt` — 中英文提示词、动画部分、工具定义、字体校准、表格规则
-- `TestArtifactStore` — 目录创建、试运行前缀、图像/参数/推理/内容/元数据保存、批次索引
+- `TestSystemPrompt` — 中英文提示词、动画部分、工具定义（OpenAI + Anthropic）、字体校准、表格规则
+- `TestArtifactStore` — 目录创建、试运行/重放前缀、输入复制、图像/参数/推理/内容/元数据保存、批次索引
 - `TestPPTXAssembler` — 单页/多页组装、尺寸、超链接处理
+- `TestMessageBuilderAnthropic` — Anthropic 消息格式、图像块、系统提示词提取
+- `TestAnthropicThinkingBudget` — 推理强度的思考预算映射
 - `TestLoggingConfig` — 日志设置和 logger 创建
 
 ### 代码质量

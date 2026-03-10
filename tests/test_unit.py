@@ -295,11 +295,11 @@ class TestTokenEstimator:
         result = estimate_tokens(messages, reasoning_effort="medium")
 
         assert "assumed_output_tps" in result
-        assert result["assumed_output_tps"] == 50.0
+        assert result["assumed_output_tps"] == 30.0
         assert result["reasoning_effort"] == "medium"
         assert result["reasoning_multiplier"] == 1.5
         assert "estimated_response_time_seconds" in result
-        expected_time = (result["estimated_output_tokens"] / 50.0) * 1.5
+        expected_time = (result["estimated_output_tokens"] / 30.0) * 1.5
         assert abs(result["estimated_response_time_seconds"] - round(expected_time, 1)) < 0.2
 
     def test_estimated_response_time_high_reasoning(self):
@@ -312,6 +312,41 @@ class TestTokenEstimator:
         assert result_high["reasoning_multiplier"] == 2.5
         assert result_low["reasoning_multiplier"] == 1.0
         assert result_high["estimated_response_time_seconds"] > result_low["estimated_response_time_seconds"]
+
+    def test_openai_image_tokens_high_detail(self):
+        from src.token_estimator import _openai_image_tokens
+
+        # 2880×1620 at high detail: scaled to 768 shortest side → 1365×768, tiles 3×2=6
+        tokens = _openai_image_tokens(2880, 1620, "high")
+        assert tokens == 85 + 170 * 6  # 1105
+
+    def test_openai_image_tokens_low_detail(self):
+        from src.token_estimator import _openai_image_tokens
+
+        tokens = _openai_image_tokens(2880, 1620, "low")
+        assert tokens == 85
+
+    def test_anthropic_image_tokens(self):
+        from src.token_estimator import _anthropic_image_tokens
+
+        # 2880×1620: long edge 2880 > 1568 → scale to 1568×882, then area/750
+        tokens = _anthropic_image_tokens(2880, 1620)
+        assert tokens > 0
+        assert tokens < 2000  # should be ~1843
+
+    def test_anthropic_image_tokens_small(self):
+        from src.token_estimator import _anthropic_image_tokens
+
+        # 200×200: no resize needed, tokens = 200*200/750 ≈ 54
+        tokens = _anthropic_image_tokens(200, 200)
+        assert tokens == 54
+
+    def test_anthropic_vs_openai_different_counts(self):
+        from src.token_estimator import _anthropic_image_tokens, _openai_image_tokens
+
+        openai_tokens = _openai_image_tokens(1920, 1080, "high")
+        anthropic_tokens = _anthropic_image_tokens(1920, 1080)
+        assert openai_tokens != anthropic_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -470,16 +505,24 @@ class TestArtifactStore:
         assert os.path.isdir(store.root)
         assert os.path.isdir(store.pages_dir)
         assert os.path.isdir(store.slides_dir)
-        assert store.root.startswith("run-")
-        shutil.rmtree(store.root)
+        assert store.root.startswith("runs/run-")
+        shutil.rmtree("runs")
 
     def test_dry_run_prefix(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
         from src.artifacts import ArtifactStore
 
         store = ArtifactStore(sample_pdf, dry_run=True)
-        assert store.root.startswith("dry-run-")
-        shutil.rmtree(store.root)
+        assert store.root.startswith("runs/dry-run-")
+        shutil.rmtree("runs")
+
+    def test_replay_prefix(self, sample_pdf, tmp_path):
+        os.chdir(tmp_path)
+        from src.artifacts import ArtifactStore
+
+        store = ArtifactStore(sample_pdf, replay_of="runs/run-test-20260101-000000")
+        assert store.root.startswith("runs/replay-")
+        shutil.rmtree("runs")
 
     def test_save_page_images(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -492,7 +535,7 @@ class TestArtifactStore:
 
         assert os.path.isfile(os.path.join(store.pages_dir, "page_000.png"))
         assert os.path.isfile(os.path.join(store.pages_dir, "page_001.png"))
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
 
     def test_save_run_params(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -506,7 +549,7 @@ class TestArtifactStore:
         with open(path) as f:
             data = json.load(f)
         assert data["dpi"] == 288
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
 
     def test_save_reasoning(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -519,7 +562,7 @@ class TestArtifactStore:
         assert os.path.isfile(path)
         with open(path) as f:
             assert "thinking process" in f.read()
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
 
     def test_save_reasoning_skips_empty(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -529,7 +572,7 @@ class TestArtifactStore:
         store.save_reasoning("", batch_idx=0)
 
         assert not os.path.isfile(os.path.join(store.root, "reasoning.txt"))
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
 
     def test_save_content_text(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -540,7 +583,7 @@ class TestArtifactStore:
 
         path = os.path.join(store.root, "content.txt")
         assert os.path.isfile(path)
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
 
     def test_save_slide_xmls(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -551,7 +594,7 @@ class TestArtifactStore:
 
         assert os.path.isfile(os.path.join(store.slides_dir, "slide_000.xml"))
         assert os.path.isfile(os.path.join(store.slides_dir, "slide_001.xml"))
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
 
     def test_api_response_indexing(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -563,7 +606,7 @@ class TestArtifactStore:
 
         assert os.path.isfile(os.path.join(store.root, "api_response.json"))
         assert os.path.isfile(os.path.join(store.root, "api_response_1.json"))
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
 
     def test_save_metadata(self, sample_pdf, tmp_path):
         os.chdir(tmp_path)
@@ -577,7 +620,18 @@ class TestArtifactStore:
         with open(path) as f:
             data = json.load(f)
         assert data["pages"] == 2
-        shutil.rmtree(store.root)
+        shutil.rmtree("runs")
+
+    def test_copy_input(self, sample_pdf, tmp_path):
+        os.chdir(tmp_path)
+        from src.artifacts import ArtifactStore
+
+        store = ArtifactStore(sample_pdf)
+        store.copy_input(sample_pdf)
+
+        copied = os.path.join(store.root, os.path.basename(sample_pdf))
+        assert os.path.isfile(copied)
+        shutil.rmtree("runs")
 
 
 # ---------------------------------------------------------------------------

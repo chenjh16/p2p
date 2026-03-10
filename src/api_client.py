@@ -27,6 +27,16 @@ class LLMResult:
         content_text: str,
         reasoning_text: str,
     ):
+        """Initialise with all outputs from a streaming LLM API call.
+
+        Args:
+            slide_xmls: Mapping of page number to PresentationML XML string.
+            response_data: Aggregated response metadata (usage, timing, etc.).
+            raw_chunks: Every SSE chunk received during streaming.
+            tool_calls_raw: Parsed tool call payloads from the response.
+            content_text: Any non-tool-call text the model produced.
+            reasoning_text: The model's thinking/reasoning output (if any).
+        """
         self.slide_xmls = slide_xmls
         self.response_data = response_data
         self.raw_chunks = raw_chunks

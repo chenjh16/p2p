@@ -16,8 +16,7 @@ env/
 
 *.pptx
 *.tmp
-dry-run-*/
-run-*/
+runs/
 
 .mypy_cache/
 .ruff_cache/

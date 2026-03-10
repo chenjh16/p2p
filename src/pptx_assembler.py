@@ -31,7 +31,7 @@ def _qn(tag: str) -> str:
 
 
 class PPTXAssembler:
-    """Assemble GPT-generated Slide XMLs into a valid PPTX file."""
+    """Assemble LLM-generated Slide XMLs into a valid PPTX file."""
 
     def __init__(self, slide_width_pt: float, slide_height_pt: float):
         self.prs = Presentation()

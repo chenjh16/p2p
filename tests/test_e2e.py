@@ -1,4 +1,4 @@
-"""End-to-end test using a mock OpenAI-compatible server."""
+"""End-to-end tests using mock OpenAI and Anthropic servers."""
 
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ import fitz
 import pytest
 from pptx import Presentation
 
-MOCK_PORT = 19876
-MOCK_BASE_URL = f"http://127.0.0.1:{MOCK_PORT}/v1"
+MOCK_OPENAI_PORT = 19876
+MOCK_ANTHROPIC_PORT = 19877
+MOCK_BASE_URL = f"http://127.0.0.1:{MOCK_OPENAI_PORT}/v1"
+MOCK_ANTHROPIC_URL = f"http://127.0.0.1:{MOCK_ANTHROPIC_PORT}"
 
 SAMPLE_SLIDE_XML = """\
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -139,10 +141,89 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
         """Suppress request logging."""
 
 
+def _build_anthropic_sse_response(page_count: int) -> str:
+    """Build Anthropic-format streaming SSE response with tool_use content blocks."""
+    events = []
+
+    events.append(
+        f"event: message_start\n"
+        f"data: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_test', 'type': 'message', 'role': 'assistant', 'model': 'mock-claude', 'content': [], 'usage': {'input_tokens': 1000, 'output_tokens': 0}}})}\n\n"
+    )
+
+    for page_num in range(page_count):
+        slide_xml = SAMPLE_SLIDE_XML.format(page_num=page_num)
+        args_json = json.dumps({"page_num": page_num, "slide_xml": slide_xml})
+
+        events.append(
+            f"event: content_block_start\n"
+            f"data: {json.dumps({'type': 'content_block_start', 'index': page_num, 'content_block': {'type': 'tool_use', 'id': f'toolu_{page_num}', 'name': 'write_slide_xml', 'input': {}}})}\n\n"
+        )
+        events.append(
+            f"event: content_block_delta\n"
+            f"data: {json.dumps({'type': 'content_block_delta', 'index': page_num, 'delta': {'type': 'input_json_delta', 'partial_json': args_json}})}\n\n"
+        )
+        events.append(
+            f"event: content_block_stop\n"
+            f"data: {json.dumps({'type': 'content_block_stop', 'index': page_num})}\n\n"
+        )
+
+    events.append(
+        f"event: message_delta\n"
+        f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'output_tokens': 500 * page_count}})}\n\n"
+    )
+    events.append(
+        f"event: message_stop\n"
+        f"data: {json.dumps({'type': 'message_stop'})}\n\n"
+    )
+
+    return "".join(events)
+
+
+class MockAnthropicHandler(BaseHTTPRequestHandler):
+    """Mock handler for Anthropic Messages API streaming responses."""
+
+    page_count = 1
+
+    def do_POST(self):  # noqa: N802
+        """Handle POST requests to the messages endpoint."""
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(content_len)) if content_len else {}
+
+        messages = body.get("messages", [])
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                MockAnthropicHandler.page_count = sum(
+                    1 for p in content if p.get("type") == "image"
+                )
+
+        sse_body = _build_anthropic_sse_response(MockAnthropicHandler.page_count)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(sse_body.encode())
+
+    def log_message(self, format, *args):  # noqa: A002
+        """Suppress request logging."""
+
+
 @pytest.fixture(scope="module")
 def mock_server():
     """Start a mock OpenAI server for the test module."""
-    server = HTTPServer(("127.0.0.1", MOCK_PORT), MockOpenAIHandler)
+    server = HTTPServer(("127.0.0.1", MOCK_OPENAI_PORT), MockOpenAIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+    yield server
+    server.shutdown()
+
+
+@pytest.fixture(scope="module")
+def mock_anthropic_server():
+    """Start a mock Anthropic server for the test module."""
+    server = HTTPServer(("127.0.0.1", MOCK_ANTHROPIC_PORT), MockAnthropicHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     time.sleep(0.2)
@@ -164,7 +245,7 @@ def sample_pdf(tmp_path):
 
 
 def test_dry_run(sample_pdf, tmp_path):
-    """Dry-run should produce artifacts without calling the API."""
+    """Dry-run should produce artifacts under runs/ without calling the API."""
     os.chdir(tmp_path)
     from src.dry_run import run_dry
     from src.logging_config import setup_logging
@@ -178,6 +259,7 @@ def test_dry_run(sample_pdf, tmp_path):
         batch_size=25,
     )
 
+    assert output_dir.startswith("runs/")
     assert os.path.isdir(output_dir)
     assert os.path.isfile(os.path.join(output_dir, "metadata.json"))
     assert os.path.isfile(os.path.join(output_dir, "messages.json"))
@@ -186,13 +268,14 @@ def test_dry_run(sample_pdf, tmp_path):
     assert os.path.isfile(os.path.join(output_dir, "run_params.json"))
     assert os.path.isfile(os.path.join(output_dir, "pages", "page_000.png"))
     assert os.path.isfile(os.path.join(output_dir, "pages", "page_001.png"))
+    assert os.path.isfile(os.path.join(output_dir, "test.pdf"))
 
     with open(os.path.join(output_dir, "metadata.json")) as f:
         meta = json.load(f)
     assert meta["pdf_pages"] == 2
-    assert meta["dpi"] == 96
+    assert meta["runtime_params"]["dpi"] == 96
 
-    shutil.rmtree(output_dir)
+    shutil.rmtree("runs")
 
 
 def test_e2e_conversion(mock_server, sample_pdf, tmp_path):
@@ -261,7 +344,7 @@ def test_e2e_conversion(mock_server, sample_pdf, tmp_path):
     texts = [shape.text for shape in slide1.shapes if hasattr(shape, "text")]
     assert any("Test Slide Page 1" in t for t in texts)
 
-    shutil.rmtree(store.root)
+    shutil.rmtree("runs")
     os.remove(output_pptx)
 
 
@@ -282,3 +365,102 @@ def test_xml_validator():
     result = validate_and_fix(bad_xml, 0)
     assert "<p:sld" in result
     assert "ErrorInfo" in result or "<p:sld" in result
+
+
+def test_e2e_anthropic_conversion(mock_anthropic_server, sample_pdf, tmp_path):
+    """Full conversion with mock Anthropic server should produce a valid PPTX."""
+    os.chdir(tmp_path)
+    output_pptx = str(tmp_path / "output_anthropic.pptx")
+
+    from src.api_client_anthropic import call_anthropic
+    from src.artifacts import ArtifactStore
+    from src.logging_config import setup_logging
+    from src.message_builder import build_messages, get_system_prompt_text
+    from src.pdf_preprocessor import pdf_to_images
+    from src.pptx_assembler import PPTXAssembler
+    from src.token_estimator import estimate_tokens
+
+    setup_logging("WARNING")
+
+    pages = pdf_to_images(sample_pdf, dpi=96)
+    assert len(pages) == 2
+
+    store = ArtifactStore(pdf_path=sample_pdf)
+    store.save_page_images(pages)
+
+    messages = build_messages(pages, enable_animations=False, provider="anthropic")
+    store.save_messages(messages)
+
+    token_est = estimate_tokens(messages, model="claude-opus-4-6", dpi=96)
+    assert token_est["image_count"] == 2
+
+    sys_prompt = get_system_prompt_text(enable_animations=False)
+    stream_log = os.path.join(store.root, "stream.log")
+    result = call_anthropic(
+        messages=messages,
+        system_prompt=sys_prompt,
+        api_key="test-key",
+        api_base_url=MOCK_ANTHROPIC_URL,
+        model_name="mock-claude",
+        stream_log_path=stream_log,
+        reasoning_effort="",
+    )
+
+    assert len(result.slide_xmls) == 2
+    assert 0 in result.slide_xmls
+    assert 1 in result.slide_xmls
+
+    store.save_slide_xmls(result.slide_xmls)
+    store.save_api_response(result.response_data)
+
+    assembler = PPTXAssembler(
+        slide_width_pt=pages[0][1]["width_pt"],
+        slide_height_pt=pages[0][1]["height_pt"],
+    )
+    assembler.assemble(result.slide_xmls)
+    assembler.save(output_pptx)
+
+    assert os.path.isfile(output_pptx)
+    prs = Presentation(output_pptx)
+    assert len(prs.slides) == 2
+
+    slide0 = prs.slides[0]
+    texts = [shape.text for shape in slide0.shapes if hasattr(shape, "text")]
+    assert any("Test Slide Page 0" in t for t in texts)
+
+    shutil.rmtree("runs")
+    os.remove(output_pptx)
+
+
+def test_dry_run_anthropic(sample_pdf, tmp_path):
+    """Dry-run with Anthropic provider should produce correct artifacts."""
+    os.chdir(tmp_path)
+    from src.dry_run import run_dry
+    from src.logging_config import setup_logging
+
+    setup_logging("WARNING")
+    output_dir = run_dry(
+        pdf_path=sample_pdf,
+        dpi=96,
+        enable_animations=False,
+        model_name="claude-opus-4-6",
+        batch_size=25,
+        provider="anthropic",
+    )
+
+    assert output_dir.startswith("runs/")
+    assert os.path.isdir(output_dir)
+    assert os.path.isfile(os.path.join(output_dir, "metadata.json"))
+    assert os.path.isfile(os.path.join(output_dir, "messages.json"))
+
+    with open(os.path.join(output_dir, "metadata.json")) as f:
+        meta = json.load(f)
+    assert meta["runtime_params"]["api_provider"] == "anthropic"
+    assert meta["runtime_params"]["recommended_batch_size"] > 0
+    assert meta["runtime_params"]["gateway_timeout_seconds"] == 600
+
+    with open(os.path.join(output_dir, "messages.json")) as f:
+        msgs = json.load(f)
+    assert all(m.get("role") != "system" for m in msgs)
+
+    shutil.rmtree("runs")
