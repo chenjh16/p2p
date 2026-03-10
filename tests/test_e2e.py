@@ -183,6 +183,7 @@ def test_dry_run(sample_pdf, tmp_path):
     assert os.path.isfile(os.path.join(output_dir, "messages.json"))
     assert os.path.isfile(os.path.join(output_dir, "system_prompt.txt"))
     assert os.path.isfile(os.path.join(output_dir, "token_estimate.json"))
+    assert os.path.isfile(os.path.join(output_dir, "run_params.json"))
     assert os.path.isfile(os.path.join(output_dir, "pages", "page_000.png"))
     assert os.path.isfile(os.path.join(output_dir, "pages", "page_001.png"))
 

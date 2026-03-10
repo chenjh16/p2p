@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "p2p"
 version = "0.1.0"
 description = "Convert PDF slides to editable PPTX using multimodal LLM"
+license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
     "python-pptx>=0.6.22",

@@ -36,7 +36,7 @@ def main() -> None:
 
     # Processing options
     parser.add_argument(
-        "--dpi", type=int, default=192, help="Rendering DPI for LLM input (default: 192)"
+        "--dpi", type=int, default=288, help="Rendering DPI for LLM input (default: 288)"
     )
     parser.add_argument(
         "--enable-animations",
@@ -45,9 +45,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--reasoning-effort",
-        default="high",
-        choices=["low", "medium", "high"],
-        help="Reasoning effort for the model (default: high)",
+        default="medium",
+        choices=["low", "medium", "high", "xhigh"],
+        help="Reasoning effort for the model (default: medium)",
+    )
+    parser.add_argument(
+        "--prompt-lang",
+        default="en",
+        choices=["en", "zh"],
+        help="System prompt language: en=English, zh=Chinese (default: en)",
     )
     parser.add_argument(
         "--batch-size",
@@ -113,6 +119,8 @@ def main() -> None:
             enable_animations=args.enable_animations,
             model_name=args.model_name,
             batch_size=args.batch_size,
+            prompt_lang=args.prompt_lang,
+            reasoning_effort=args.reasoning_effort,
         )
         return
 
@@ -122,13 +130,27 @@ def main() -> None:
     from .api_client import call_llm
     from .artifacts import ArtifactStore
     from .message_builder import build_messages
-    from .pdf_preprocessor import pdf_to_images
+    from .pdf_preprocessor import pdf_to_images, snap_slide_dimensions
     from .postprocessor import postprocess_raster_fills
     from .pptx_assembler import PPTXAssembler
     from .system_prompt import WRITE_SLIDE_XML_TOOL
     from .token_estimator import estimate_tokens
 
     store = ArtifactStore(pdf_path=args.pdf)
+
+    store.save_run_params({
+        "pdf": os.path.abspath(args.pdf),
+        "output": os.path.abspath(args.output) if args.output else "",
+        "api_base_url": args.api_base_url,
+        "model_name": args.model_name,
+        "dpi": args.dpi,
+        "enable_animations": args.enable_animations,
+        "reasoning_effort": args.reasoning_effort,
+        "prompt_lang": args.prompt_lang,
+        "batch_size": args.batch_size,
+        "skip_postprocess": args.skip_postprocess,
+        "log_level": args.log_level,
+    })
 
     # Step 1: PDF preprocessing
     pages = pdf_to_images(args.pdf, dpi=args.dpi)
@@ -160,16 +182,25 @@ def main() -> None:
         batch_label = f"batch {batch_idx + 1}/{n_batches} (pages {start}-{end - 1})"
         logger.info("Building messages for %s", batch_label)
 
-        messages = build_messages(batch_pages, enable_animations=args.enable_animations)
+        messages = build_messages(batch_pages, enable_animations=args.enable_animations, prompt_lang=args.prompt_lang)
 
         if batch_idx == 0:
             store.save_messages(messages)
             store.save_system_prompt(messages[0]["content"])
             store.save_tools([WRITE_SLIDE_XML_TOOL])
 
-        token_est = estimate_tokens(messages, model=args.model_name)
+        token_est = estimate_tokens(messages, model=args.model_name, reasoning_effort=args.reasoning_effort)
         if batch_idx == 0:
             store.save_token_estimate(token_est)
+
+        est_time = token_est["estimated_response_time_seconds"]
+        logger.info(
+            "Estimated response time for %s: ~%.0fs (~%.1f min) at %.0f tok/s",
+            batch_label,
+            est_time,
+            est_time / 60,
+            token_est["assumed_output_tps"],
+        )
 
         stream_log = os.path.join(store.root, f"stream_batch{batch_idx}.log")
         logger.info("Calling LLM API for %s", batch_label)
@@ -181,12 +212,15 @@ def main() -> None:
             model_name=args.model_name,
             stream_log_path=stream_log,
             reasoning_effort=args.reasoning_effort,
+            estimated_response_seconds=float(token_est["estimated_response_time_seconds"]),
         )
         t_api_total += time.time() - t_api_start
 
         store.save_api_response(result.response_data)
         store.save_stream_chunks(result.raw_chunks)
         store.save_tool_calls(result.tool_calls_raw)
+        store.save_reasoning(result.reasoning_text, batch_idx=batch_idx)
+        store.save_content_text(result.content_text, batch_idx=batch_idx)
 
         batch_xmls = result.slide_xmls
         if not batch_xmls:
@@ -209,10 +243,15 @@ def main() -> None:
     logger.info("Total slide XMLs collected: %d", len(slide_xmls))
     store.save_slide_xmls(slide_xmls)
 
-    # Step 4: Assemble PPTX
+    # Step 4: Assemble PPTX (snap to standard aspect ratio)
+    raw_w = pages[0][1]["width_pt"]
+    raw_h = pages[0][1]["height_pt"]
+    snap_w, snap_h, ratio_label = snap_slide_dimensions(raw_w, raw_h)
+    logger.info("Slide dimensions: %.0f×%.0f pt (aspect ratio: %s)", snap_w, snap_h, ratio_label)
+
     assembler = PPTXAssembler(
-        slide_width_pt=pages[0][1]["width_pt"],
-        slide_height_pt=pages[0][1]["height_pt"],
+        slide_width_pt=snap_w,
+        slide_height_pt=snap_h,
     )
     assembler.assemble(slide_xmls)
 
@@ -243,9 +282,14 @@ def main() -> None:
         "model": args.model_name,
         "batch_size": batch_size,
         "batches": n_batches,
-        "slide_width_pt": pages[0][1]["width_pt"],
-        "slide_height_pt": pages[0][1]["height_pt"],
+        "pdf_width_pt": raw_w,
+        "pdf_height_pt": raw_h,
+        "slide_width_pt": snap_w,
+        "slide_height_pt": snap_h,
+        "aspect_ratio": ratio_label,
         "token_estimate": token_est,
+        "estimated_response_time_seconds": token_est["estimated_response_time_seconds"],
+        "assumed_output_tps": token_est["assumed_output_tps"],
         "api_elapsed_seconds": t_api_total,
         "slides_received": len(slide_xmls),
     })

@@ -101,6 +101,32 @@ class ArtifactStore:
         with open(os.path.join(self.root, "metadata.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
+    def save_run_params(self, params: dict) -> None:
+        """Write the CLI / execution parameters used for this run."""
+        with open(os.path.join(self.root, "run_params.json"), "w", encoding="utf-8") as f:
+            json.dump(params, f, ensure_ascii=False, indent=2)
+        logger.info("Saved run parameters")
+
+    def save_reasoning(self, reasoning_text: str, batch_idx: int = 0) -> None:
+        """Write the model's thinking/reasoning output to a text file."""
+        if not reasoning_text:
+            return
+        suffix = f"_{batch_idx}" if batch_idx > 0 else ""
+        path = os.path.join(self.root, f"reasoning{suffix}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(reasoning_text)
+        logger.info("Saved reasoning (%d chars) → %s", len(reasoning_text), os.path.basename(path))
+
+    def save_content_text(self, content_text: str, batch_idx: int = 0) -> None:
+        """Write the model's non-tool-call content output to a text file."""
+        if not content_text:
+            return
+        suffix = f"_{batch_idx}" if batch_idx > 0 else ""
+        path = os.path.join(self.root, f"content{suffix}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content_text)
+        logger.info("Saved content text (%d chars) → %s", len(content_text), os.path.basename(path))
+
 
 def _strip_base64(messages: list[dict], pages_dir: str) -> list[dict]:
     """Create a copy of messages with base64 images replaced by file paths."""

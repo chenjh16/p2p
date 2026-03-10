@@ -6,6 +6,7 @@ import json
 import sys
 import time
 
+import httpx
 import openai
 
 from .logging_config import get_logger
@@ -41,18 +42,31 @@ def call_llm(
     model_name: str = "gpt-5.4",
     max_tokens: int = 128000,
     stream_log_path: str = "",
-    reasoning_effort: str = "high",
+    reasoning_effort: str = "medium",
+    estimated_response_seconds: float = 0,
 ) -> LLMResult:
     """Call the LLM API with streaming and extract slide XMLs from tool calls.
 
     Streams output to stderr in real-time and writes to stream_log_path.
+    The timeout is set dynamically: max(estimated_response_seconds * 3, 600) seconds,
+    ensuring enough headroom for slow responses.
     """
-    client_kwargs: dict = {}
+    min_timeout = 600
+    timeout_seconds = max(estimated_response_seconds * 3, min_timeout)
+    timeout = httpx.Timeout(timeout_seconds, connect=30.0)
+
+    client_kwargs: dict = {"timeout": timeout, "max_retries": 0}
     if api_base_url:
         client_kwargs["base_url"] = api_base_url
     if api_key:
         client_kwargs["api_key"] = api_key
     client = openai.OpenAI(**client_kwargs)
+
+    logger.info(
+        "HTTP timeout: %.0fs (3× estimated ~%.0fs response), no retries",
+        timeout_seconds,
+        estimated_response_seconds,
+    )
 
     tools = [WRITE_SLIDE_XML_TOOL]
 

@@ -9,7 +9,19 @@ from .logging_config import get_logger
 logger = get_logger("token_est")
 
 
-def estimate_tokens(messages: list[dict], model: str = "gpt-5.4") -> dict:
+REASONING_EFFORT_MULTIPLIERS: dict[str, float] = {
+    "low": 1.0,
+    "medium": 1.5,
+    "high": 2.5,
+    "xhigh": 4.0,
+}
+
+
+def estimate_tokens(
+    messages: list[dict],
+    model: str = "gpt-5.4",
+    reasoning_effort: str = "medium",
+) -> dict:
     """Estimate token consumption for the given messages."""
     try:
         enc = tiktoken.encoding_for_model(model)
@@ -43,6 +55,10 @@ def estimate_tokens(messages: list[dict], model: str = "gpt-5.4") -> dict:
     # Output estimate: ~3000 tokens per slide XML + 2000 overhead
     estimated_output = image_count * 3000 + 2000
 
+    assumed_output_tps = 50.0
+    reasoning_multiplier = REASONING_EFFORT_MULTIPLIERS.get(reasoning_effort, 1.5)
+    est_response_seconds = (estimated_output / assumed_output_tps) * reasoning_multiplier
+
     result = {
         "text_tokens": text_tokens,
         "image_count": image_count,
@@ -51,6 +67,10 @@ def estimate_tokens(messages: list[dict], model: str = "gpt-5.4") -> dict:
         "estimated_output_tokens": estimated_output,
         "estimated_total_tokens": total_input + estimated_output,
         "estimated_cost_usd": _estimate_cost(total_input, estimated_output),
+        "assumed_output_tps": assumed_output_tps,
+        "reasoning_effort": reasoning_effort,
+        "reasoning_multiplier": reasoning_multiplier,
+        "estimated_response_time_seconds": round(est_response_seconds, 1),
     }
 
     logger.info(
@@ -62,6 +82,14 @@ def estimate_tokens(messages: list[dict], model: str = "gpt-5.4") -> dict:
     cost_info = result["estimated_cost_usd"]
     assert isinstance(cost_info, dict)
     logger.info("Estimated cost: $%.4f", cost_info["total_cost_usd"])
+    logger.info(
+        "Estimated response time: ~%.0fs (~%.1f min) at %.0f tok/s (reasoning=%s, ×%.1f)",
+        est_response_seconds,
+        est_response_seconds / 60,
+        assumed_output_tps,
+        reasoning_effort,
+        reasoning_multiplier,
+    )
     return result
 
 

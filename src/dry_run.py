@@ -22,9 +22,22 @@ def run_dry(
     enable_animations: bool,
     model_name: str,
     batch_size: int,
+    prompt_lang: str = "en",
+    reasoning_effort: str = "medium",
 ) -> str:
     """Execute dry-run: prepare everything before the API call and export artifacts."""
     store = ArtifactStore(pdf_path=pdf_path, dry_run=True)
+
+    store.save_run_params({
+        "pdf": os.path.abspath(pdf_path),
+        "dpi": dpi,
+        "enable_animations": enable_animations,
+        "model_name": model_name,
+        "batch_size": batch_size,
+        "prompt_lang": prompt_lang,
+        "reasoning_effort": reasoning_effort,
+        "dry_run": True,
+    })
 
     # Step 1: PDF preprocessing
     pages = pdf_to_images(pdf_path, dpi=dpi)
@@ -32,14 +45,14 @@ def run_dry(
 
     # Step 2: Build messages
     logger.info("Building messages...")
-    messages = build_messages(pages, enable_animations=enable_animations)
+    messages = build_messages(pages, enable_animations=enable_animations, prompt_lang=prompt_lang)
     store.save_messages(messages)
     store.save_system_prompt(messages[0]["content"])
     store.save_tools([WRITE_SLIDE_XML_TOOL])
 
     # Step 3: Token estimation
     logger.info("Estimating tokens...")
-    token_est = estimate_tokens(messages, model=model_name)
+    token_est = estimate_tokens(messages, model=model_name, reasoning_effort=reasoning_effort)
     store.save_token_estimate(token_est)
 
     # Export metadata
@@ -55,6 +68,8 @@ def run_dry(
         "slide_width_pt": pages[0][1]["width_pt"],
         "slide_height_pt": pages[0][1]["height_pt"],
         "token_estimate": token_est,
+        "estimated_response_time_seconds": token_est["estimated_response_time_seconds"],
+        "assumed_output_tps": token_est["assumed_output_tps"],
     })
 
     # Print summary
@@ -98,6 +113,14 @@ def run_dry(
         f"{token_est['estimated_total_tokens']:,}",
     )
     logger.info("  Est. cost:        $%.4f", cost_info["total_cost_usd"])
+    logger.info("-" * 60)
+    est_time = token_est["estimated_response_time_seconds"]
+    logger.info(
+        "  Est. response:    ~%.0fs (~%.1f min) at %.0f tok/s",
+        est_time,
+        est_time / 60,
+        token_est["assumed_output_tps"],
+    )
     logger.info("=" * 60)
     logger.info("  Output dir:       %s/", store.root)
     logger.info("=" * 60)

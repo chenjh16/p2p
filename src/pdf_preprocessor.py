@@ -8,9 +8,54 @@ from .logging_config import get_logger
 
 logger = get_logger("preprocessor")
 
+STANDARD_ASPECT_RATIOS: list[tuple[str, float, float, float]] = [
+    ("16:9", 16 / 9, 720, 405),
+    ("4:3", 4 / 3, 720, 540),
+    ("16:10", 16 / 10, 720, 450),
+    ("A4 landscape", 297 / 210, 720, 509),
+]
+
+
+def snap_slide_dimensions(width_pt: float, height_pt: float) -> tuple[float, float, str]:
+    """Snap PDF page dimensions to the closest standard PowerPoint aspect ratio.
+
+    Returns (snapped_width_pt, snapped_height_pt, ratio_label).
+    """
+    if height_pt == 0:
+        return width_pt, height_pt, "unknown"
+
+    page_ratio = width_pt / height_pt
+
+    best_label = "custom"
+    best_diff = float("inf")
+    best_w = width_pt
+    best_h = height_pt
+
+    for label, ratio, std_w, std_h in STANDARD_ASPECT_RATIOS:
+        diff = abs(page_ratio - ratio)
+        if diff < best_diff:
+            best_diff = diff
+            best_label = label
+            best_w = std_w
+            best_h = std_h
+
+    tolerance = 0.05
+    if best_diff > tolerance:
+        logger.info(
+            "Page ratio %.3f does not match any standard ratio (closest: %s, diff=%.3f). Using original dimensions.",
+            page_ratio, best_label, best_diff,
+        )
+        return width_pt, height_pt, "custom"
+
+    logger.info(
+        "Detected aspect ratio: %s (page=%.1f×%.1f → snapped=%.1f×%.1f)",
+        best_label, width_pt, height_pt, best_w, best_h,
+    )
+    return best_w, best_h, best_label
+
 
 def pdf_to_images(
-    pdf_path: str, dpi: int = 192
+    pdf_path: str, dpi: int = 288
 ) -> list[tuple[bytes, dict]]:
     """Render each PDF page to a high-resolution PNG image.
 
